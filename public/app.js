@@ -3,13 +3,21 @@
 
   const MAX_HISTORY = 32;
   const CATEGORY_COLORS = {
-    photos: '#e59a3c',
-    videos: '#4e9af1',
-    audio: '#3dbe8b',
-    backups: '#2bb8b8',
-    other: '#7b8494'
+    photos: '#d97e38',
+    videos: '#4c8cd6',
+    audio: '#3ca374',
+    backups: '#349696',
+    other: '#808690'
   };
-  const DISK_PALETTE = ['#e59a3c', '#4e9af1', '#3dbe8b', '#2bb8b8', '#d47451', '#8894a6'];
+  const DISK_PALETTE = ['#d97e38', '#4c8cd6', '#3ca374', '#349696', '#c46445', '#808690'];
+  const VIEW_TITLES = {
+    overview: 'Systemübersicht',
+    files: 'Dateimanager & Medien',
+    storage: 'Festplatten & SMB-Freigaben',
+    docker: 'Docker-Container & Portainer',
+    appstore: 'App Store & Compose Stacks',
+    settings: 'System- & Dashboard-Einstellungen'
+  };
 
   const state = {
     mode: null,
@@ -147,6 +155,8 @@
   // ==================== NAVIGATION & MODALS ====================
   function switchView(viewName) {
     state.activeView = viewName;
+    const titleEl = document.getElementById('active-view-title');
+    if (titleEl) titleEl.textContent = VIEW_TITLES[viewName] || 'Systemübersicht';
     document.querySelectorAll('.nav-tab').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.view === viewName);
     });
@@ -215,7 +225,7 @@
 
     document.getElementById('live-dot').classList.toggle('paused', state.paused);
 
-    state.history.push({
+    const pointNow = {
       ts: Date.now(),
       cpu: data.system.cpu.usagePercent || 0,
       ram: data.system.memory.usedPercent || 0,
@@ -223,7 +233,27 @@
       netTxMB: (data.system.network.txBytesPerSec || 0) / (1024 * 1024),
       diskReadMB: (data.storage.totals.readBytesPerSec || 0) / (1024 * 1024),
       diskWriteMB: (data.storage.totals.writeBytesPerSec || 0) / (1024 * 1024)
-    });
+    };
+
+    if (state.history.length === 0 && data.mode === 'demo') {
+      for (let i = MAX_HISTORY - 1; i >= 1; i -= 1) {
+        const waveA = Math.sin(i * 0.42) * 4.1 + Math.cos(i * 0.24) * 2.1;
+        const waveB = Math.cos(i * 0.35) * 1.8;
+        const netMult = Math.max(0.45, 0.85 + Math.sin(i * 0.52) * 0.32);
+        const ioMult = Math.max(0.4, 0.82 + Math.cos(i * 0.48) * 0.35);
+        state.history.push({
+          ts: pointNow.ts - i * 2000,
+          cpu: Math.max(4, Math.min(96, pointNow.cpu + waveA)),
+          ram: Math.max(12, Math.min(95, pointNow.ram + waveB)),
+          netRxMB: Math.max(0.5, pointNow.netRxMB * netMult),
+          netTxMB: Math.max(0.2, pointNow.netTxMB * netMult),
+          diskReadMB: Math.max(1, pointNow.diskReadMB * ioMult),
+          diskWriteMB: Math.max(0.5, pointNow.diskWriteMB * ioMult)
+        });
+      }
+    }
+
+    state.history.push(pointNow);
     if (state.history.length > MAX_HISTORY) state.history.shift();
 
     renderAll();
@@ -565,7 +595,7 @@
 
     ctx.strokeStyle = gridColor;
     ctx.lineWidth = 1;
-    ctx.font = '11px "JetBrains Mono", monospace';
+    ctx.font = '10.5px "IBM Plex Mono", monospace';
     ctx.fillStyle = textColor;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
@@ -592,6 +622,9 @@
       const stepX = plotW / (MAX_HISTORY - 1);
       const startIndex = MAX_HISTORY - values.length;
 
+      let lastX = pad.left;
+      let lastY = pad.top + plotH;
+
       ctx.beginPath();
       values.forEach((v, idx) => {
         const x = pad.left + (startIndex + idx) * stepX;
@@ -599,27 +632,36 @@
         const y = pad.top + plotH - (clamped / maxY) * plotH;
         if (idx === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
+        lastX = x;
+        lastY = y;
       });
 
       ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 1.85;
       ctx.lineJoin = 'round';
       ctx.stroke();
 
-      const lastX = pad.left + (startIndex + values.length - 1) * stepX;
       const firstX = pad.left + startIndex * stepX;
       ctx.lineTo(lastX, pad.top + plotH);
       ctx.lineTo(firstX, pad.top + plotH);
       ctx.closePath();
       ctx.save();
+      const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
+      grad.addColorStop(0, color);
+      grad.addColorStop(1, 'transparent');
       ctx.globalAlpha = fillAlpha;
-      ctx.fillStyle = color;
+      ctx.fillStyle = grad;
       ctx.fill();
       ctx.restore();
+
+      ctx.beginPath();
+      ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
     }
 
-    drawSeries(seriesA, colorA, 0.1);
-    drawSeries(seriesB, colorB, 0.08);
+    drawSeries(seriesA, colorA, 0.14);
+    drawSeries(seriesB, colorB, 0.11);
 
     const lastA = seriesA[seriesA.length - 1] ?? 0;
     const lastB = seriesB[seriesB.length - 1] ?? 0;
@@ -976,7 +1018,7 @@
       if (grouped.size > 0) {
         grid.innerHTML = [...grouped]
           .map((name) => `
-            <article class="card disk-card">
+            <article class="stack-inset-item">
               <div class="disk-top">
                 <div>
                   <h3 class="disk-label">${escapeHtml(name)}</h3>
@@ -991,7 +1033,7 @@
           `)
           .join('');
       } else {
-        grid.innerHTML = `<div class="card disk-card"><p class="muted-text">Keine Portainer-Stacks gefunden oder API-Token nicht gesetzt.</p></div>`;
+        grid.innerHTML = `<div class="stack-inset-item"><p class="muted-text">Keine Portainer-Stacks gefunden oder API-Token nicht gesetzt.</p></div>`;
       }
       return;
     }
@@ -1001,7 +1043,7 @@
         const isActive = s.status === 1;
         const deepLink = baseUrl ? resolveServiceUrl(s.deepLink) : '';
         return `
-          <article class="card disk-card">
+          <article class="stack-inset-item">
             <div class="disk-top">
               <div>
                 <h3 class="disk-label">${escapeHtml(s.name)}</h3>
@@ -1120,13 +1162,13 @@
               </div>
               <div class="container-sub mono">${escapeHtml(c.statusText)}</div>
             </td>
-            <td class="mono" style="font-size:11.5px;max-width:220px;word-break:break-all;">${escapeHtml(c.image)}</td>
+            <td class="mono docker-img-cell" title="${escapeHtml(c.image)}">${escapeHtml(c.image)}</td>
             <td>${renderStateBadge(c)}</td>
             <td class="num mono">${c.state === 'running' ? `${c.cpuPercent.toFixed(1)}%` : '—'}</td>
             <td class="num mono">${c.state === 'running' ? formatBytesBinary(c.memoryBytes) : '—'}</td>
             <td>${renderPortBadges(c.ports)}</td>
             <td class="num">
-              <div style="display:inline-flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;">
+              <div class="table-actions-row">
                 ${controlBtns}
                 ${editUpdateBtns}
                 <button class="btn-secondary btn-sm" data-view-logs="${escapeHtml(c.id)}" data-container-name="${escapeHtml(c.name)}">Logs</button>

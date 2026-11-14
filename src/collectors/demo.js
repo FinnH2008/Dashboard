@@ -508,6 +508,7 @@ function getDemoSnapshot(customLabels = {}, customServerName = 'Heimserver NAS')
 
   const containers = demoContainers.map((c, idx) => ({
     ...c,
+    fullId: c.id,
     stackName: c.name.startsWith('immich') || c.name === 'postgres-media' ? 'immich' : c.name === 'jellyfin' ? 'medien' : null,
     cpuPercent: c.state === 'running' ? Math.round(wave(c.baseCpu, c.baseCpu * 0.45, 0.35, idx * 0.7) * 10) / 10 : 0,
     memoryBytes: c.state === 'running' ? c.memoryBytes : 0,

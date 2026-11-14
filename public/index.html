@@ -7,7 +7,7 @@
   <meta name="description" content="Vollständiger CasaOS-Ersatz für Linux-Homeserver: Fotos, Videos, mehrere Festplatten, Dateimanager, App Store, Compose Stacks, Terminal &amp; SMB." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -35,85 +35,114 @@
   </div>
 
   <div class="app-shell">
-    <!-- Top Navigation & Server Identity Bar -->
-    <header class="topbar">
-      <div class="topbar-inner">
-        <div class="brand-cluster">
-          <div class="brand-mark" aria-hidden="true">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="2" y="3" width="20" height="7" rx="1.5"></rect>
-              <rect x="2" y="14" width="20" height="7" rx="1.5"></rect>
-              <line x1="6" y1="6.5" x2="6.01" y2="6.5"></line>
-              <line x1="6" y1="17.5" x2="6.01" y2="17.5"></line>
-              <line x1="10" y1="6.5" x2="18" y2="6.5"></line>
-              <line x1="10" y1="17.5" x2="18" y2="17.5"></line>
-            </svg>
-          </div>
-          <div class="brand-meta">
-            <div class="brand-title-row">
-              <h1 id="server-title">Heimserver NAS</h1>
-              <span class="host-pill mono" id="host-ip">192.168.178.42</span>
-            </div>
-            <p class="brand-subtitle" id="host-subtitle">Debian GNU/Linux · Kernel 6.1 · Laufzeit —</p>
-          </div>
+    <!-- Left Navigation Rail -->
+    <aside class="sidebar-rail" aria-label="Hauptmenü">
+      <div class="sidebar-brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="7" rx="1.5"></rect>
+            <rect x="2" y="14" width="20" height="7" rx="1.5"></rect>
+            <line x1="6" y1="6.5" x2="6.01" y2="6.5"></line>
+            <line x1="6" y1="17.5" x2="6.01" y2="17.5"></line>
+            <line x1="10" y1="6.5" x2="18" y2="6.5"></line>
+            <line x1="10" y1="17.5" x2="18" y2="17.5"></line>
+          </svg>
         </div>
+        <div class="brand-meta">
+          <div class="brand-title-row">
+            <h1 id="server-title">Heimserver NAS</h1>
+          </div>
+          <div class="host-pill mono" id="host-ip">192.168.178.42</div>
+        </div>
+      </div>
 
-        <nav class="nav-tabs" aria-label="Hauptnavigation">
-          <button class="nav-tab active" data-view="overview" id="tab-overview">Übersicht</button>
-          <button class="nav-tab" data-view="files" id="tab-files">Dateien</button>
-          <button class="nav-tab" data-view="appstore" id="tab-appstore">App Store</button>
-          <button class="nav-tab" data-view="storage" id="tab-storage">Festplatten</button>
-          <button class="nav-tab" data-view="docker" id="tab-docker">Docker</button>
-          <button class="nav-tab" data-view="settings" id="tab-settings">Einstellungen</button>
-        </nav>
+      <nav class="nav-tabs" aria-label="Hauptnavigation">
+        <div class="nav-section-label">System</div>
+        <button class="nav-tab active" data-view="overview" id="tab-overview">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect></svg>
+          <span>Übersicht</span>
+        </button>
+        <button class="nav-tab" data-view="files" id="tab-files">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+          <span>Dateien</span>
+        </button>
+        <button class="nav-tab" data-view="storage" id="tab-storage">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14a9 3 0 0 0 18 0V5"></path><path d="M3 12a9 3 0 0 0 18 0"></path></svg>
+          <span>Festplatten &amp; SMB</span>
+        </button>
 
-        <div class="topbar-controls">
-          <button class="icon-btn" id="btn-global-search" title="Schnellsuche (Strg+K)">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
-            <span class="hide-sm">Suche</span>
-            <kbd class="kbd">⌘K</kbd>
-          </button>
+        <div class="nav-section-label" style="margin-top:10px;">Dienste</div>
+        <button class="nav-tab" data-view="docker" id="tab-docker">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+          <span>Docker &amp; Portainer</span>
+        </button>
+        <button class="nav-tab" data-view="appstore" id="tab-appstore">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg>
+          <span>App Store</span>
+        </button>
+        <button class="nav-tab" data-view="settings" id="tab-settings">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          <span>Einstellungen</span>
+        </button>
+      </nav>
 
-          <button class="icon-btn" id="btn-alerts" title="System-Warnungen">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path></svg>
-            <span class="alert-badge hidden" id="alerts-count">0</span>
-          </button>
-
+      <div class="sidebar-footer">
+        <div class="sidebar-host-spec mono" id="host-subtitle">Debian GNU/Linux · Laufzeit —</div>
+        <div class="sidebar-mode-row">
+          <span class="sidebar-mode-label">Datenquelle</span>
           <div class="mode-switch" role="group" aria-label="Datenquelle">
             <button class="mode-btn" id="btn-mode-live" data-mode="live">Live</button>
             <button class="mode-btn" id="btn-mode-demo" data-mode="demo">Demo</button>
           </div>
-
-          <button class="icon-btn" id="btn-pause" title="Live-Aktualisierung pausieren / fortsetzen">
-            <span class="live-dot" id="live-dot"></span>
-            <span id="live-status-text" class="hide-sm">Live</span>
-          </button>
-
-          <button class="icon-btn" id="btn-theme" title="Hell / Dunkel umschalten" aria-label="Theme umschalten">
-            <svg id="icon-sun" class="hidden" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
-            <svg id="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
-          </button>
-
-          <button class="icon-btn" id="btn-power" title="Server Neustart / Herunterfahren" aria-label="Power-Menü">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
-          </button>
-
-          <button class="icon-btn hidden" id="btn-logout" title="Abmelden">Abmelden</button>
         </div>
       </div>
-    </header>
+    </aside>
 
-    <!-- Mode Banner -->
-    <div class="context-banner hidden" id="demo-banner">
-      <div class="context-banner-inner">
-        <span>
-          <strong>Demo-Vorschau aktiv:</strong> Simulierter 5-Festplatten-Homeserver (33 TB Pool) mit Dateimanager, Compose Stacks, Terminal, SMB &amp; Docker.
-        </span>
-        <button class="text-action-btn" id="banner-switch-live">Zu Live-Server wechseln</button>
-      </div>
-    </div>
+    <!-- Workspace Column -->
+    <div class="workspace-col">
+      <!-- Slim Utility Topbar -->
+      <header class="topbar">
+        <div class="topbar-inner">
+          <div class="topbar-left">
+            <span class="topbar-crumb" id="active-view-title">Systemübersicht</span>
+            <span class="demo-chip hidden" id="demo-banner">
+              Demo-Modus (33 TB simuliert)
+              <button class="demo-chip-btn" id="banner-switch-live">Zu Live</button>
+            </span>
+          </div>
 
-    <main class="main-content">
+          <div class="topbar-controls">
+            <button class="icon-btn" id="btn-global-search" title="Schnellsuche (Strg+K)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+              <span class="hide-sm">Suche</span>
+              <kbd class="kbd">⌘K</kbd>
+            </button>
+
+            <button class="icon-btn" id="btn-alerts" title="System-Warnungen">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path></svg>
+              <span class="alert-badge hidden" id="alerts-count">0</span>
+            </button>
+
+            <button class="icon-btn" id="btn-pause" title="Live-Aktualisierung pausieren / fortsetzen">
+              <span class="live-dot" id="live-dot"></span>
+              <span id="live-status-text" class="hide-sm">Live</span>
+            </button>
+
+            <button class="icon-btn" id="btn-theme" title="Hell / Dunkel umschalten" aria-label="Theme umschalten">
+              <svg id="icon-sun" class="hidden" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+              <svg id="icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+            </button>
+
+            <button class="icon-btn" id="btn-power" title="Server Neustart / Herunterfahren" aria-label="Power-Menü">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
+            </button>
+
+            <button class="icon-btn hidden" id="btn-logout" title="Abmelden">Abmelden</button>
+          </div>
+        </div>
+      </header>
+
+      <main class="main-content">
       <!-- ==================== VIEW: OVERVIEW ==================== -->
       <section class="view-section active" id="view-overview">
         <div class="kpi-grid">
@@ -489,7 +518,7 @@
         </div>
 
         <!-- Portainer Integration Panel -->
-        <article class="card panel-card" id="portainer-bridge-panel" style="margin-bottom:16px;">
+        <article class="card panel-card" id="portainer-bridge-panel">
           <div class="panel-header">
             <div>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -503,7 +532,7 @@
               <a class="btn-primary btn-sm hidden" id="btn-open-portainer" href="#" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">Portainer öffnen ↗</a>
             </div>
           </div>
-          <div class="disks-grid" id="portainer-stacks-grid"></div>
+          <div class="portainer-stacks-grid" id="portainer-stacks-grid"></div>
         </article>
 
         <article class="card panel-card">
@@ -596,7 +625,8 @@
           </article>
         </div>
       </section>
-    </main>
+      </main>
+    </div>
   </div>
 
   <!-- Modal: Global Command Search (Ctrl+K) -->
