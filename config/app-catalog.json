@@ -1,0 +1,278 @@
+[
+  {
+    "id": "immich",
+    "name": "Immich",
+    "category": "Fotos & Videos",
+    "tagline": "Selbstgehostete Google-Fotos-Alternative mit Handy-Sync & KI-Suche",
+    "image": "ghcr.io/immich-app/immich-server:release",
+    "defaultPort": 2283,
+    "containerPort": 2283,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Mediathek / Foto-Ordner", "hostDefault": "/mnt/fotos", "containerPath": "/usr/src/app/upload" }
+    ],
+    "env": [
+      { "key": "TZ", "value": "Europe/Berlin" }
+    ],
+    "note": "Hinweis: Immich benötigt zusätzlich PostgreSQL (pgvecto-rs) & Redis. Empfohlen für Einzel-Container-Tests oder via Compose-Stack."
+  },
+  {
+    "id": "jellyfin",
+    "name": "Jellyfin",
+    "category": "Fotos & Videos",
+    "tagline": "Freier Medienserver für Filme, Serien, Musik & Live-TV ohne Abo",
+    "image": "lscr.io/linuxserver/jellyfin:latest",
+    "defaultPort": 8096,
+    "containerPort": 8096,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Konfiguration", "hostDefault": "/opt/stacks/jellyfin/config", "containerPath": "/config" },
+      { "label": "Filme-Festplatte", "hostDefault": "/mnt/filme", "containerPath": "/data/movies" },
+      { "label": "Serien-Festplatte", "hostDefault": "/mnt/serien", "containerPath": "/data/tvshows" }
+    ],
+    "env": [
+      { "key": "PUID", "value": "1000" },
+      { "key": "PGID", "value": "1000" },
+      { "key": "TZ", "value": "Europe/Berlin" }
+    ]
+  },
+  {
+    "id": "plex",
+    "name": "Plex Media Server",
+    "category": "Fotos & Videos",
+    "tagline": "Beliebter Medienserver für Filme, Serien & Musik auf allen Geräten",
+    "image": "lscr.io/linuxserver/plex:latest",
+    "defaultPort": 32400,
+    "containerPort": 32400,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Konfiguration", "hostDefault": "/opt/stacks/plex/config", "containerPath": "/config" },
+      { "label": "Filme & Videos", "hostDefault": "/mnt/filme", "containerPath": "/movies" },
+      { "label": "Serien", "hostDefault": "/mnt/serien", "containerPath": "/tv" }
+    ],
+    "env": [
+      { "key": "PUID", "value": "1000" },
+      { "key": "PGID", "value": "1000" },
+      { "key": "VERSION", "value": "docker" },
+      { "key": "TZ", "value": "Europe/Berlin" }
+    ]
+  },
+  {
+    "id": "photoprism",
+    "name": "PhotoPrism",
+    "category": "Fotos & Videos",
+    "tagline": "KI-gestützte Foto- & Video-Verwaltung für große RAW-Sammlungen",
+    "image": "photoprism/photoprism:latest",
+    "defaultPort": 2342,
+    "containerPort": 2342,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Originale (Fotos)", "hostDefault": "/mnt/fotos", "containerPath": "/photoprism/originals" },
+      { "label": "Datenbank & Cache", "hostDefault": "/opt/stacks/photoprism/storage", "containerPath": "/photoprism/storage" }
+    ],
+    "env": [
+      { "key": "PHOTOPRISM_ADMIN_USER", "value": "admin" },
+      { "key": "PHOTOPRISM_ADMIN_PASSWORD", "value": "homeserver" },
+      { "key": "TZ", "value": "Europe/Berlin" }
+    ]
+  },
+  {
+    "id": "nextcloud",
+    "name": "Nextcloud",
+    "category": "Cloud & Backup",
+    "tagline": "Eigene Cloud für Dateien, Kalender, Kontakte & automatischen Foto-Upload",
+    "image": "nextcloud:stable-apache",
+    "defaultPort": 8080,
+    "containerPort": 80,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Nextcloud Daten", "hostDefault": "/mnt/backup/nextcloud", "containerPath": "/var/www/html" }
+    ],
+    "env": [
+      { "key": "TZ", "value": "Europe/Berlin" }
+    ]
+  },
+  {
+    "id": "filebrowser",
+    "name": "FileBrowser",
+    "category": "Cloud & Backup",
+    "tagline": "Schneller Web-Dateimanager & Link-Freigabe für alle Festplatten",
+    "image": "filebrowser/filebrowser:latest",
+    "defaultPort": 8085,
+    "containerPort": 80,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Wurzelverzeichnis", "hostDefault": "/mnt", "containerPath": "/srv" },
+      { "label": "Datenbank", "hostDefault": "/opt/stacks/filebrowser/database", "containerPath": "/database" }
+    ],
+    "env": []
+  },
+  {
+    "id": "syncthing",
+    "name": "Syncthing",
+    "category": "Cloud & Backup",
+    "tagline": "Kontinuierliche P2P-Dateisynchronisation zwischen PC, Handy & NAS",
+    "image": "lscr.io/linuxserver/syncthing:latest",
+    "defaultPort": 8384,
+    "containerPort": 8384,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Konfiguration", "hostDefault": "/opt/stacks/syncthing/config", "containerPath": "/config" },
+      { "label": "Sync-Ordner", "hostDefault": "/mnt/fotos", "containerPath": "/data1" }
+    ],
+    "env": [
+      { "key": "PUID", "value": "1000" },
+      { "key": "PGID", "value": "1000" },
+      { "key": "TZ", "value": "Europe/Berlin" }
+    ]
+  },
+  {
+    "id": "duplicati",
+    "name": "Duplicati",
+    "category": "Cloud & Backup",
+    "tagline": "Automatisierte, verschlüsselte Backups deiner Foto- & Dokumenten-Laufwerke",
+    "image": "lscr.io/linuxserver/duplicati:latest",
+    "defaultPort": 8200,
+    "containerPort": 8200,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Konfiguration", "hostDefault": "/opt/stacks/duplicati/config", "containerPath": "/config" },
+      { "label": "Backup-Ziel", "hostDefault": "/mnt/backup", "containerPath": "/backups" },
+      { "label": "Quell-Daten (Fotos)", "hostDefault": "/mnt/fotos", "containerPath": "/source/fotos" }
+    ],
+    "env": [
+      { "key": "PUID", "value": "1000" },
+      { "key": "PGID", "value": "1000" },
+      { "key": "TZ", "value": "Europe/Berlin" }
+    ]
+  },
+  {
+    "id": "paperless",
+    "name": "Paperless-ngx",
+    "category": "Cloud & Backup",
+    "tagline": "Digitales Dokumentenarchiv mit automatischer Texterkennung (OCR)",
+    "image": "ghcr.io/paperless-ngx/paperless-ngx:latest",
+    "defaultPort": 8000,
+    "containerPort": 8000,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Dokumente & Daten", "hostDefault": "/opt/stacks/paperless/data", "containerPath": "/usr/src/paperless/data" },
+      { "label": "Medien-Archiv", "hostDefault": "/mnt/backup/paperless", "containerPath": "/usr/src/paperless/media" }
+    ],
+    "env": [
+      { "key": "PAPERLESS_OCR_LANGUAGE", "value": "deu+eng" },
+      { "key": "TZ", "value": "Europe/Berlin" }
+    ]
+  },
+  {
+    "id": "vaultwarden",
+    "name": "Vaultwarden",
+    "category": "Sicherheit & Netz",
+    "tagline": "Leichtgewichtiger Bitwarden-kompatibler Passwort-Tresor für Zuhause",
+    "image": "vaultwarden/server:latest",
+    "defaultPort": 8088,
+    "containerPort": 80,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Tresor-Daten", "hostDefault": "/opt/stacks/vaultwarden/data", "containerPath": "/data" }
+    ],
+    "env": [
+      { "key": "TZ", "value": "Europe/Berlin" }
+    ]
+  },
+  {
+    "id": "adguard",
+    "name": "AdGuard Home",
+    "category": "Sicherheit & Netz",
+    "tagline": "Netzwerkweiter DNS-Server, Werbe- & Tracker-Blocker für alle Geräte",
+    "image": "adguard/adguardhome:latest",
+    "defaultPort": 3000,
+    "containerPort": 3000,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Arbeitsdaten", "hostDefault": "/opt/stacks/adguard/work", "containerPath": "/opt/adguardhome/work" },
+      { "label": "Konfiguration", "hostDefault": "/opt/stacks/adguard/conf", "containerPath": "/opt/adguardhome/conf" }
+    ],
+    "env": []
+  },
+  {
+    "id": "npm",
+    "name": "Nginx Proxy Manager",
+    "category": "Sicherheit & Netz",
+    "tagline": "Einfacher Reverse-Proxy mit Let's Encrypt SSL-Zertifikaten per Web-UI",
+    "image": "jc21/nginx-proxy-manager:latest",
+    "defaultPort": 81,
+    "containerPort": 81,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "NPM Daten", "hostDefault": "/opt/stacks/npm/data", "containerPath": "/data" },
+      { "label": "Zertifikate", "hostDefault": "/opt/stacks/npm/letsencrypt", "containerPath": "/etc/letsencrypt" }
+    ],
+    "env": []
+  },
+  {
+    "id": "uptime-kuma",
+    "name": "Uptime Kuma",
+    "category": "System & Docker",
+    "tagline": "Schickes Status- & Verfügbarkeits-Monitoring für alle lokalen Dienste",
+    "image": "louislam/uptime-kuma:1",
+    "defaultPort": 3001,
+    "containerPort": 3001,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Daten", "hostDefault": "/opt/stacks/uptime-kuma/data", "containerPath": "/app/data" }
+    ],
+    "env": []
+  },
+  {
+    "id": "homeassistant",
+    "name": "Home Assistant",
+    "category": "System & Docker",
+    "tagline": "Lokale Smart-Home-Zentrale ohne Cloud-Zwang",
+    "image": "ghcr.io/home-assistant/home-assistant:stable",
+    "defaultPort": 8123,
+    "containerPort": 8123,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Konfiguration", "hostDefault": "/opt/stacks/homeassistant/config", "containerPath": "/config" }
+    ],
+    "env": [
+      { "key": "TZ", "value": "Europe/Berlin" }
+    ]
+  },
+  {
+    "id": "qbittorrent",
+    "name": "qBittorrent",
+    "category": "Fotos & Videos",
+    "tagline": "Ressourcenschonender Download-Manager mit Web-Oberfläche",
+    "image": "lscr.io/linuxserver/qbittorrent:latest",
+    "defaultPort": 8082,
+    "containerPort": 8080,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Konfiguration", "hostDefault": "/opt/stacks/qbittorrent/config", "containerPath": "/config" },
+      { "label": "Downloads", "hostDefault": "/mnt/filme/downloads", "containerPath": "/downloads" }
+    ],
+    "env": [
+      { "key": "PUID", "value": "1000" },
+      { "key": "PGID", "value": "1000" },
+      { "key": "WEBUI_PORT", "value": "8080" },
+      { "key": "TZ", "value": "Europe/Berlin" }
+    ]
+  },
+  {
+    "id": "portainer",
+    "name": "Portainer CE",
+    "category": "System & Docker",
+    "tagline": "Umfangreiche Docker- & Stack-Verwaltung für Fortgeschrittene",
+    "image": "portainer/portainer-ce:latest",
+    "defaultPort": 9000,
+    "containerPort": 9000,
+    "restartPolicy": "unless-stopped",
+    "volumes": [
+      { "label": "Docker Socket", "hostDefault": "/var/run/docker.sock", "containerPath": "/var/run/docker.sock" },
+      { "label": "Portainer Daten", "hostDefault": "/opt/stacks/portainer/data", "containerPath": "/data" }
+    ],
+    "env": []
+  }
+]

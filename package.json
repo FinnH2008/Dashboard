@@ -1,0 +1,15 @@
+{
+  "name": "homeserver-dashboard",
+  "version": "1.0.0",
+  "description": "Docker-fähiges Linux Homeserver Dashboard für Medien (Fotos, Videos), mehrere Festplatten und Container-Monitoring",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}

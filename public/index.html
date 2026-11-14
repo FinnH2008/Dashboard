@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="de" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Heimserver OS — CasaOS-Ersatz für Medien, Festplatten &amp; Portainer</title>
+  <meta name="description" content="Vollständiger CasaOS-Ersatz für Linux-Homeserver: Fotos, Videos, mehrere Festplatten, Dateimanager, App Store, Compose Stacks, Terminal &amp; SMB." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- Optional Auth Gate Overlay -->
+  <div class="auth-overlay hidden" id="auth-overlay">
+    <div class="auth-card card">
+      <div class="brand-cluster" style="margin-bottom:8px;">
+        <div class="brand-mark" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="2" y="3" width="20" height="7" rx="1.5"></rect><rect x="2" y="14" width="20" height="7" rx="1.5"></rect><line x1="6" y1="6.5" x2="6.01" y2="6.5"></line><line x1="6" y1="17.5" x2="6.01" y2="17.5"></line></svg>
+        </div>
+        <div>
+          <h2 style="margin:0;font-size:17px;">Homeserver Anmeldung</h2>
+          <p class="panel-subtitle">Passwort erforderlich, um auf Server &amp; Dateien zuzugreifen</p>
+        </div>
+      </div>
+      <form id="form-login" class="settings-form">
+        <div class="form-group">
+          <label for="login-password">Dashboard-Passwort</label>
+          <input type="password" id="login-password" class="input-full" autocomplete="current-password" required />
+        </div>
+        <p class="form-error hidden" id="login-error">Falsches Passwort.</p>
+        <button type="submit" class="btn-primary" style="width:100%;">Anmelden</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="app-shell">
+    <!-- Top Navigation & Server Identity Bar -->
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand-cluster">
+          <div class="brand-mark" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="3" width="20" height="7" rx="1.5"></rect>
+              <rect x="2" y="14" width="20" height="7" rx="1.5"></rect>
+              <line x1="6" y1="6.5" x2="6.01" y2="6.5"></line>
+              <line x1="6" y1="17.5" x2="6.01" y2="17.5"></line>
+              <line x1="10" y1="6.5" x2="18" y2="6.5"></line>
+              <line x1="10" y1="17.5" x2="18" y2="17.5"></line>
+            </svg>
+          </div>
+          <div class="brand-meta">
+            <div class="brand-title-row">
+              <h1 id="server-title">Heimserver NAS</h1>
+              <span class="host-pill mono" id="host-ip">192.168.178.42</span>
+            </div>
+            <p class="brand-subtitle" id="host-subtitle">Debian GNU/Linux · Kernel 6.1 · Laufzeit —</p>
+          </div>
+        </div>
+
+        <nav class="nav-tabs" aria-label="Hauptnavigation">
+          <button class="nav-tab active" data-view="overview" id="tab-overview">Übersicht</button>
+          <button class="nav-tab" data-view="files" id="tab-files">Dateien</button>
+          <button class="nav-tab" data-view="appstore" id="tab-appstore">App Store</button>
+          <button class="nav-tab" data-view="storage" id="tab-storage">Festplatten</button>
+          <button class="nav-tab" data-view="docker" id="tab-docker">Docker</button>
+          <button class="nav-tab" data-view="settings" id="tab-settings">Einstellungen</button>
+        </nav>
+
+        <div class="topbar-controls">
+          <button class="icon-btn" id="btn-global-search" title="Schnellsuche (Strg+K)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+            <span class="hide-sm">Suche</span>
+            <kbd class="kbd">⌘K</kbd>
+          </button>
+
+          <button class="icon-btn" id="btn-alerts" title="System-Warnungen">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path></svg>
+            <span class="alert-badge hidden" id="alerts-count">0</span>
+          </button>
+
+          <div class="mode-switch" role="group" aria-label="Datenquelle">
+            <button class="mode-btn" id="btn-mode-live" data-mode="live">Live</button>
+            <button class="mode-btn" id="btn-mode-demo" data-mode="demo">Demo</button>
+          </div>
+
+          <button class="icon-btn" id="btn-pause" title="Live-Aktualisierung pausieren / fortsetzen">
+            <span class="live-dot" id="live-dot"></span>
+            <span id="live-status-text" class="hide-sm">Live</span>
+          </button>
+
+          <button class="icon-btn" id="btn-theme" title="Hell / Dunkel umschalten" aria-label="Theme umschalten">
+            <svg id="icon-sun" class="hidden" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+            <svg id="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+          </button>
+
+          <button class="icon-btn" id="btn-power" title="Server Neustart / Herunterfahren" aria-label="Power-Menü">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
+          </button>
+
+          <button class="icon-btn hidden" id="btn-logout" title="Abmelden">Abmelden</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Mode Banner -->
+    <div class="context-banner hidden" id="demo-banner">
+      <div class="context-banner-inner">
+        <span>
+          <strong>Demo-Vorschau aktiv:</strong> Simulierter 5-Festplatten-Homeserver (33 TB Pool) mit Dateimanager, Compose Stacks, Terminal, SMB &amp; Docker.
+        </span>
+        <button class="text-action-btn" id="banner-switch-live">Zu Live-Server wechseln</button>
+      </div>
+    </div>
+
+    <main class="main-content">
+      <!-- ==================== VIEW: OVERVIEW ==================== -->
+      <section class="view-section active" id="view-overview">
+        <div class="kpi-grid">
+          <article class="card kpi-card">
+            <div class="kpi-header">
+              <span class="kpi-label">Prozessor (CPU)</span>
+              <span class="kpi-badge mono" id="kpi-cpu-temp">— °C</span>
+            </div>
+            <div class="kpi-value-row">
+              <span class="kpi-value mono" id="kpi-cpu-val">0%</span>
+              <span class="kpi-sub mono" id="kpi-cpu-load">Load 0.00</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill fill-blue" id="kpi-cpu-bar" style="width: 0%"></div>
+            </div>
+            <p class="kpi-footnote" id="kpi-cpu-model">—</p>
+          </article>
+
+          <article class="card kpi-card">
+            <div class="kpi-header">
+              <span class="kpi-label">Arbeitsspeicher (RAM)</span>
+              <span class="kpi-badge mono" id="kpi-ram-pct">0%</span>
+            </div>
+            <div class="kpi-value-row">
+              <span class="kpi-value mono" id="kpi-ram-val">0 GiB</span>
+              <span class="kpi-sub mono" id="kpi-ram-total">von 0 GiB</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill fill-emerald" id="kpi-ram-bar" style="width: 0%"></div>
+            </div>
+            <p class="kpi-footnote" id="kpi-ram-cache">Cache: — · Swap: —</p>
+          </article>
+
+          <article class="card kpi-card">
+            <div class="kpi-header">
+              <span class="kpi-label">Netzwerk-Durchsatz</span>
+              <span class="kpi-badge mono" id="kpi-net-iface">—</span>
+            </div>
+            <div class="kpi-value-row net-split">
+              <div>
+                <span class="net-dir">↓ Empfangen</span>
+                <span class="kpi-value-sm mono" id="kpi-net-rx">0 MB/s</span>
+              </div>
+              <div>
+                <span class="net-dir">↑ Senden</span>
+                <span class="kpi-value-sm mono" id="kpi-net-tx">0 MB/s</span>
+              </div>
+            </div>
+            <div class="mini-bars" id="net-activity-bars" aria-hidden="true"></div>
+            <p class="kpi-footnote" id="kpi-net-total">Gesamt-Traffic: —</p>
+          </article>
+
+          <article class="card kpi-card">
+            <div class="kpi-header">
+              <span class="kpi-label">Speicher-Pool &amp; Docker</span>
+              <span class="kpi-badge status-ok" id="kpi-pool-health">Alle OK</span>
+            </div>
+            <div class="kpi-value-row">
+              <span class="kpi-value mono" id="kpi-pool-used">0 TB</span>
+              <span class="kpi-sub mono" id="kpi-pool-total">von 0 TB</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill fill-amber" id="kpi-pool-bar" style="width: 0%"></div>
+            </div>
+            <p class="kpi-footnote" id="kpi-pool-foot">0 Festplatten · 0 Container aktiv</p>
+          </article>
+        </div>
+
+        <div class="split-grid">
+          <article class="card panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>Echtzeit-Telemetrie</h2>
+                <p class="panel-subtitle">Verlauf der letzten 60 Sekunden</p>
+              </div>
+              <div class="segmented-sm" role="group">
+                <button class="seg-btn active" data-chart="compute" id="chart-mode-compute">CPU &amp; RAM</button>
+                <button class="seg-btn" data-chart="network" id="chart-mode-network">Netzwerk</button>
+                <button class="seg-btn" data-chart="diskio" id="chart-mode-diskio">Festplatten I/O</button>
+              </div>
+            </div>
+            <div class="chart-wrapper">
+              <canvas id="telemetry-canvas"></canvas>
+            </div>
+            <div class="chart-legend" id="telemetry-legend"></div>
+          </article>
+
+          <article class="card panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>Mediathek-Verteilung</h2>
+                <p class="panel-subtitle" id="media-summary-subtitle">Fotos, Videos, Musik &amp; Backups</p>
+              </div>
+              <div style="display:flex;gap:6px;">
+                <button class="btn-secondary btn-sm" data-goto="files">Dateien</button>
+                <button class="btn-secondary btn-sm" id="btn-rescan-media">Neu scannen</button>
+              </div>
+            </div>
+            <div class="media-donut-layout">
+              <div class="donut-box">
+                <canvas id="media-donut-canvas" width="160" height="160"></canvas>
+                <div class="donut-center">
+                  <span class="donut-total mono" id="donut-total-size">0 TB</span>
+                  <span class="donut-label" id="donut-total-files">0 Dateien</span>
+                </div>
+              </div>
+              <div class="media-category-list" id="overview-media-categories"></div>
+            </div>
+          </article>
+        </div>
+
+        <section class="section-block">
+          <div class="section-header">
+            <div>
+              <h2>Festplatten &amp; Speicher-Pool</h2>
+              <p class="section-subtitle">Alle physischen Laufwerke, Mountpoints, Temperaturen &amp; I/O-Raten</p>
+            </div>
+            <div class="section-actions">
+              <span class="io-pill mono" id="total-disk-io">Lesen 0 MB/s · Schreiben 0 MB/s</span>
+              <button class="btn-secondary btn-sm" data-goto="storage">Speicher &amp; SMB</button>
+            </div>
+          </div>
+          <div class="disks-grid" id="overview-disks-grid"></div>
+        </section>
+
+        <div class="lower-grid">
+          <article class="card panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>Homeserver-Apps</h2>
+                <p class="panel-subtitle">Schnellzugriff auf Portainer, Immich, Jellyfin &amp; Co.</p>
+              </div>
+              <div style="display:flex;gap:6px;">
+                <button class="btn-secondary btn-sm" data-goto="appstore">App Store</button>
+                <button class="btn-secondary btn-sm" id="btn-add-service">+ Link</button>
+              </div>
+            </div>
+            <div class="services-grid" id="overview-services-grid"></div>
+          </article>
+
+          <article class="card panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>Docker-Container</h2>
+                <p class="panel-subtitle" id="docker-overview-subtitle">Laufende Dienste &amp; Ressourcenverbrauch</p>
+              </div>
+              <div class="panel-controls-inline">
+                <input type="search" class="input-sm" id="overview-docker-search" placeholder="Container suchen…" />
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Container</th>
+                    <th>Status</th>
+                    <th class="num">CPU</th>
+                    <th class="num">RAM</th>
+                    <th>Ports</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="overview-docker-tbody"></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <!-- ==================== VIEW: FILES ==================== -->
+      <section class="view-section" id="view-files">
+        <div class="section-header">
+          <div>
+            <h2>Dateimanager &amp; Medien-Browser</h2>
+            <p class="section-subtitle">Fotos ansehen, Videos streamen, Configs bearbeiten, Dateien kopieren, verschieben &amp; als ZIP exportieren</p>
+          </div>
+          <div class="section-actions">
+            <div class="segmented-sm">
+              <button class="seg-btn active" id="btn-files-view-list">Liste</button>
+              <button class="seg-btn" id="btn-files-view-grid">Kacheln</button>
+            </div>
+            <input type="file" id="file-upload-input" class="hidden" multiple />
+            <button class="btn-secondary btn-sm" id="btn-files-mkdir">+ Neuer Ordner</button>
+            <button class="btn-primary btn-sm" id="btn-files-upload">Hochladen</button>
+          </div>
+        </div>
+
+        <div class="files-layout">
+          <aside class="card files-sidebar">
+            <div class="files-sidebar-title">Laufwerke &amp; Ordner</div>
+            <div id="files-roots-list" class="files-roots-list"></div>
+          </aside>
+
+          <article class="card panel-card files-main" id="files-dropzone">
+            <div class="files-toolbar">
+              <div class="breadcrumbs mono" id="files-breadcrumbs"></div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <input type="search" class="input-sm" id="files-search" placeholder="In Ordner filtern…" />
+                <button class="btn-secondary btn-sm" id="btn-files-refresh">Aktualisieren</button>
+              </div>
+            </div>
+
+            <!-- Upload progress -->
+            <div class="upload-progress hidden" id="upload-progress-wrap">
+              <div style="display:flex;justify-content:space-between;font-size:12px;">
+                <span id="upload-progress-label">Lade hoch…</span>
+                <span class="mono" id="upload-progress-pct">0%</span>
+              </div>
+              <div class="progress-track" style="margin-top:4px;">
+                <div class="progress-fill fill-amber" id="upload-progress-bar" style="width:0%"></div>
+              </div>
+            </div>
+
+            <!-- Bulk Actions Bar -->
+            <div class="bulk-bar hidden" id="files-bulk-bar">
+              <span class="mono" id="files-bulk-count">0 ausgewählt</span>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="btn-secondary btn-sm" id="btn-bulk-copy">Kopieren nach…</button>
+                <button class="btn-secondary btn-sm" id="btn-bulk-move">Verschieben nach…</button>
+                <button class="btn-secondary btn-sm" id="btn-bulk-zip">Als ZIP laden</button>
+                <button class="btn-danger-ghost btn-sm" id="btn-bulk-delete">Löschen</button>
+              </div>
+            </div>
+
+            <div class="table-wrap" id="files-list-container">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th style="width:32px;"><input type="checkbox" id="files-select-all" aria-label="Alle auswählen" /></th>
+                    <th>Name</th>
+                    <th>Typ</th>
+                    <th class="num">Größe</th>
+                    <th>Geändert</th>
+                    <th class="num">Aktionen</th>
+                  </tr>
+                </thead>
+                <tbody id="files-tbody"></tbody>
+              </table>
+            </div>
+
+            <div class="files-grid-view hidden" id="files-grid-container"></div>
+          </article>
+        </div>
+      </section>
+
+      <!-- ==================== VIEW: APP STORE & COMPOSE STACKS ==================== -->
+      <section class="view-section" id="view-appstore">
+        <div class="section-header">
+          <div>
+            <h2>Homeserver App Store &amp; Compose Stacks</h2>
+            <p class="section-subtitle">Einzel-Apps, Multi-Container-Stacks (Immich, Paperless, Nextcloud) oder eigene docker-compose.yml</p>
+          </div>
+          <div class="section-actions">
+            <input type="search" class="input-sm" id="appstore-search" placeholder="App suchen…" />
+            <button class="btn-secondary btn-sm" id="btn-open-compose-modal">Compose YAML einfügen</button>
+            <button class="btn-primary btn-sm" id="btn-custom-container">+ Eigener Container</button>
+          </div>
+        </div>
+
+        <div class="appstore-categories" id="appstore-categories">
+          <button class="cat-pill active" data-appcat="all">Alle Einzel-Apps</button>
+          <button class="cat-pill" data-appcat="Fotos & Videos">Fotos &amp; Videos</button>
+          <button class="cat-pill" data-appcat="Cloud & Backup">Cloud &amp; Backup</button>
+          <button class="cat-pill" data-appcat="Sicherheit & Netz">Sicherheit &amp; Netz</button>
+          <button class="cat-pill" data-appcat="System & Docker">System &amp; Docker</button>
+          <button class="cat-pill" data-appcat="stacks">Multi-Container Stacks</button>
+        </div>
+
+        <div class="appstore-grid" id="appstore-grid"></div>
+
+        <section class="section-block" id="deployed-stacks-section">
+          <div class="section-header">
+            <div>
+              <h2>Verwaltete Compose-Stacks</h2>
+              <p class="section-subtitle">Über das Dashboard gespeicherte Multi-Container-Stacks (Portainer-Stacks werden unter Docker markiert)</p>
+            </div>
+          </div>
+          <div class="disks-grid" id="deployed-stacks-grid"></div>
+        </section>
+      </section>
+
+      <!-- ==================== VIEW: STORAGE & SMB ==================== -->
+      <section class="view-section" id="view-storage">
+        <div class="section-header">
+          <div>
+            <h2>Festplatten, Blockgeräte &amp; SMB-Freigaben</h2>
+            <p class="section-subtitle">Kapazitäten, SMART-Werte, Ein-/Aushängen neuer Platten und Windows/macOS-Netzwerkfreigaben</p>
+          </div>
+          <div class="section-actions">
+            <span class="io-pill mono" id="storage-total-badge">0 / 0 TB</span>
+          </div>
+        </div>
+
+        <div class="storage-summary-bar card" id="storage-pool-bar-card">
+          <div class="pool-bar-header">
+            <span class="pool-title">Gesamter Speicher-Pool nach Laufwerk</span>
+            <span class="mono" id="storage-pool-pct-label">0% belegt</span>
+          </div>
+          <div class="segmented-pool-bar" id="storage-segmented-bar"></div>
+          <div class="segmented-pool-legend" id="storage-segmented-legend"></div>
+        </div>
+
+        <div class="disks-grid detailed" id="storage-disks-grid"></div>
+
+        <section class="section-block" id="unmounted-section">
+          <div class="section-header">
+            <div>
+              <h2>Nicht gemountete Blockgeräte</h2>
+              <p class="section-subtitle">Neue physische Laufwerke ohne aktiven Mountpoint</p>
+            </div>
+          </div>
+          <div class="disks-grid" id="unmounted-disks-grid"></div>
+        </section>
+
+        <!-- SMB Network Shares Manager -->
+        <article class="card panel-card">
+          <div class="panel-header">
+            <div>
+              <h2>SMB / Samba Netzwerkfreigaben (Windows &amp; macOS)</h2>
+              <p class="panel-subtitle" id="smb-status-subtitle">Freigaben für deine Foto- und Video-Festplatten im lokalen Netzwerk</p>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <span class="tag" id="smb-running-badge">Status wird geladen…</span>
+              <button class="btn-secondary btn-sm" id="btn-add-smb-share">+ Freigabe</button>
+              <button class="btn-primary btn-sm" id="btn-apply-smb">Samba-Dienst anwenden</button>
+            </div>
+          </div>
+
+          <div class="form-row-2">
+            <div class="form-group">
+              <label for="smb-username">SMB Benutzername</label>
+              <input type="text" id="smb-username" class="input-full mono" placeholder="homeserver" />
+            </div>
+            <div class="form-group">
+              <label for="smb-password">SMB Passwort (leer lassen = Gastzugriff / unverändert)</label>
+              <input type="password" id="smb-password" class="input-full" placeholder="Optionales Passwort setzen…" />
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Freigabe-Name</th>
+                  <th>Server-Pfad</th>
+                  <th>Verbindung (Windows / macOS)</th>
+                  <th>Zugriff</th>
+                  <th class="num"></th>
+                </tr>
+              </thead>
+              <tbody id="smb-shares-tbody"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <!-- ==================== VIEW: DOCKER ==================== -->
+      <section class="view-section" id="view-docker">
+        <div class="section-header">
+          <div>
+            <h2>Docker-Container &amp; Portainer</h2>
+            <p class="section-subtitle" id="docker-full-subtitle">Live-Status über /var/run/docker.sock</p>
+          </div>
+          <div class="section-actions">
+            <div class="segmented-sm">
+              <button class="seg-btn active" data-docker-filter="all">Alle</button>
+              <button class="seg-btn" data-docker-filter="running">Laufend</button>
+              <button class="seg-btn" data-docker-filter="stopped">Gestoppt</button>
+            </div>
+            <input type="search" class="input-sm" id="docker-full-search" placeholder="Name, Stack oder Image…" />
+            <button class="btn-primary btn-sm" id="btn-docker-new">+ Container</button>
+          </div>
+        </div>
+
+        <!-- Portainer Integration Panel -->
+        <article class="card panel-card" id="portainer-bridge-panel" style="margin-bottom:16px;">
+          <div class="panel-header">
+            <div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <h2 style="margin:0;">Portainer-Stacks (Master)</h2>
+                <span class="tag" id="portainer-status-badge">Nicht verbunden</span>
+              </div>
+              <p class="panel-subtitle" id="portainer-bridge-subtitle">Portainer bleibt dauerhaft deine zentrale Ebene für Stacks, Volumes &amp; Netzwerke.</p>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn-secondary btn-sm" id="btn-goto-portainer-settings">Portainer konfigurieren</button>
+              <a class="btn-primary btn-sm hidden" id="btn-open-portainer" href="#" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">Portainer öffnen ↗</a>
+            </div>
+          </div>
+          <div class="disks-grid" id="portainer-stacks-grid"></div>
+        </article>
+
+        <article class="card panel-card">
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Container / Stack</th>
+                  <th>Image</th>
+                  <th>Status</th>
+                  <th class="num">CPU</th>
+                  <th class="num">RAM</th>
+                  <th>Ports</th>
+                  <th class="num">Aktionen</th>
+                </tr>
+              </thead>
+              <tbody id="docker-full-tbody"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <!-- ==================== VIEW: SETTINGS ==================== -->
+      <section class="view-section" id="view-settings">
+        <div class="section-header">
+          <div>
+            <h2>System- &amp; Dashboard-Einstellungen</h2>
+            <p class="section-subtitle">Servername, Medien-Pfade, App-Verknüpfungen und dauerhafte Portainer-Anbindung</p>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <article class="card panel-card">
+            <h2>Allgemein &amp; Speicherpfade</h2>
+            <form id="form-general-settings" class="settings-form">
+              <div class="form-group">
+                <label for="input-server-name">Anzeigename des Servers</label>
+                <input type="text" id="input-server-name" class="input-full" placeholder="z. B. Heimserver NAS" />
+              </div>
+              <div class="form-group">
+                <label for="input-media-paths">Medien- &amp; Datei-Ordner (kommagetrennt)</label>
+                <input type="text" id="input-media-paths" class="input-full mono" placeholder="/mnt/fotos, /mnt/filme, /mnt/serien" />
+                <small class="form-hint">Diese Pfade werden für Mediathek-Scan und Dateimanager freigegeben.</small>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="btn-primary">Einstellungen speichern</button>
+                <span class="save-feedback" id="settings-save-msg"></span>
+              </div>
+            </form>
+
+            <div class="divider"></div>
+            <h2 style="font-size:15px;">Portainer-Anbindung (Dauerbetrieb)</h2>
+            <p class="muted-text" style="margin-bottom:10px;">
+              Verbinde deine Portainer-Instanz, damit Stacks direkt über Portainer (ohne „Limited“-Status) verwaltet und Container per 1-Klick in Portainer geöffnet werden können.
+            </p>
+            <form id="form-portainer-settings" class="settings-form">
+              <div class="form-group">
+                <label for="input-portainer-url">Portainer-URL</label>
+                <input type="url" id="input-portainer-url" class="input-full mono" placeholder="https://192.168.178.42:9443" />
+              </div>
+              <div class="form-group">
+                <label for="input-portainer-token">Portainer API-Token (Portainer → My account → Access tokens)</label>
+                <input type="password" id="input-portainer-token" class="input-full mono" placeholder="ptr_…" autocomplete="off" />
+                <small class="form-hint" id="portainer-token-hint">Optional für Stack-Steuerung und App-Store-Deploy direkt in Portainer.</small>
+              </div>
+              <div class="form-actions" style="flex-wrap:wrap;">
+                <button type="button" class="btn-secondary" id="btn-test-portainer">Verbindung testen</button>
+                <button type="submit" class="btn-primary">Portainer speichern</button>
+                <span class="save-feedback" id="portainer-save-msg"></span>
+              </div>
+            </form>
+
+            <div class="divider"></div>
+            <h3 style="margin:0;font-size:14px;">CasaOS dauerhaft abschalten</h3>
+            <p class="muted-text">
+              Sobald dein Setup läuft, kannst du CasaOS ohne Datenverlust auf dem Host beenden:
+              <code>sudo systemctl disable --now casaos</code>
+            </p>
+          </article>
+
+          <article class="card panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>Verwaltete Dienste</h2>
+                <p class="panel-subtitle">Apps auf der Startseite</p>
+              </div>
+              <button class="btn-secondary btn-sm" id="btn-settings-add-service">+ Neuer Link</button>
+            </div>
+            <div class="managed-services-list" id="settings-services-list"></div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Modal: Global Command Search (Ctrl+K) -->
+  <div class="modal-backdrop hidden" id="modal-search">
+    <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-label="Schnellsuche">
+      <div class="modal-header">
+        <input type="search" id="global-search-input" class="input-full" placeholder="Suche nach Apps, Containern, Festplatten oder Aktionen…" autofocus />
+        <button class="modal-close" data-close-modal="modal-search" aria-label="Schließen">&times;</button>
+      </div>
+      <div class="search-results-list" id="global-search-results"></div>
+    </div>
+  </div>
+
+  <!-- Modal: System Alerts -->
+  <div class="modal-backdrop hidden" id="modal-alerts">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-alerts-title">
+      <div class="modal-header">
+        <h3 id="modal-alerts-title">System-Warnungen</h3>
+        <button class="modal-close" data-close-modal="modal-alerts" aria-label="Schließen">&times;</button>
+      </div>
+      <div id="alerts-list" class="settings-form"></div>
+    </div>
+  </div>
+
+  <!-- Modal: Host Power Control -->
+  <div class="modal-backdrop hidden" id="modal-power">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-power-title">
+      <div class="modal-header">
+        <h3 id="modal-power-title">Server-Steuerung</h3>
+        <button class="modal-close" data-close-modal="modal-power" aria-label="Schließen">&times;</button>
+      </div>
+      <p class="muted-text" id="power-hint">Startet den physischen Linux-Server neu oder fährt ihn herunter (erfordert <code>ALLOW_HOST_POWER=true</code>).</p>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button class="btn-secondary" data-power-action="reboot">Server neu starten</button>
+        <button class="btn-danger-ghost" data-power-action="shutdown">Herunterfahren</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Disk Label -->
+  <div class="modal-backdrop hidden" id="modal-disk">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-disk-title">
+      <div class="modal-header">
+        <h3 id="modal-disk-title">Festplatte benennen</h3>
+        <button class="modal-close" data-close-modal="modal-disk" aria-label="Schließen">&times;</button>
+      </div>
+      <form id="form-disk-label" class="settings-form">
+        <input type="hidden" id="disk-edit-id" />
+        <div class="form-group">
+          <label for="disk-edit-label">Anzeigename / Rolle</label>
+          <input type="text" id="disk-edit-label" class="input-full" required />
+        </div>
+        <p class="form-hint mono" id="disk-edit-meta"></p>
+        <div class="form-actions">
+          <button type="button" class="btn-secondary" data-close-modal="modal-disk">Abbrechen</button>
+          <button type="submit" class="btn-primary">Speichern</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Mount / Format Unmounted Disk -->
+  <div class="modal-backdrop hidden" id="modal-disk-mount">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-disk-mount-title">
+      <div class="modal-header">
+        <h3 id="modal-disk-mount-title">Laufwerk einhängen</h3>
+        <button class="modal-close" data-close-modal="modal-disk-mount" aria-label="Schließen">&times;</button>
+      </div>
+      <form id="form-disk-mount" class="settings-form">
+        <input type="hidden" id="mount-dev-path" />
+        <div class="form-group">
+          <label for="mount-target-path">Ziel-Mountpoint (unter /mnt/)</label>
+          <input type="text" id="mount-target-path" class="input-full mono" placeholder="/mnt/archiv" required />
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;">
+          <input type="checkbox" id="mount-persist-fstab" checked />
+          Dauerhaft in /etc/fstab eintragen
+        </label>
+        <p class="form-error hidden" id="mount-error"></p>
+        <div class="form-actions">
+          <button type="button" class="btn-secondary" data-close-modal="modal-disk-mount">Abbrechen</button>
+          <button type="submit" class="btn-primary">Mounten</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Add / Edit Service -->
+  <div class="modal-backdrop hidden" id="modal-service">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-service-title">
+      <div class="modal-header">
+        <h3 id="modal-service-title">Dienst hinzufügen</h3>
+        <button class="modal-close" data-close-modal="modal-service" aria-label="Schließen">&times;</button>
+      </div>
+      <form id="form-service" class="settings-form">
+        <input type="hidden" id="svc-edit-id" />
+        <div class="form-group">
+          <label for="svc-name">Name</label>
+          <input type="text" id="svc-name" class="input-full" required />
+        </div>
+        <div class="form-group">
+          <label for="svc-category">Kategorie</label>
+          <input type="text" id="svc-category" class="input-full" />
+        </div>
+        <div class="form-group">
+          <label for="svc-url">URL</label>
+          <input type="url" id="svc-url" class="input-full mono" placeholder="http://localhost:2283" required />
+        </div>
+        <div class="form-group">
+          <label for="svc-match">Docker Container-Filter (optional)</label>
+          <input type="text" id="svc-match" class="input-full mono" />
+        </div>
+        <div class="form-group">
+          <label for="svc-desc">Kurzbeschreibung</label>
+          <input type="text" id="svc-desc" class="input-full" />
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn-secondary" data-close-modal="modal-service">Abbrechen</button>
+          <button type="submit" class="btn-primary">Speichern</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Install / Edit Container -->
+  <div class="modal-backdrop hidden" id="modal-install">
+    <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-install-title">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-install-title">App installieren</h3>
+          <p class="panel-subtitle" id="modal-install-subtitle">Container erstellen oder bearbeiten</p>
+        </div>
+        <button class="modal-close" data-close-modal="modal-install" aria-label="Schließen">&times;</button>
+      </div>
+      <form id="form-install-app" class="settings-form">
+        <input type="hidden" id="inst-edit-cid" />
+        <div class="form-row-2">
+          <div class="form-group">
+            <label for="inst-name">Container-Name</label>
+            <input type="text" id="inst-name" class="input-full mono" required />
+          </div>
+          <div class="form-group">
+            <label for="inst-image">Docker Image</label>
+            <input type="text" id="inst-image" class="input-full mono" required />
+          </div>
+        </div>
+        <div class="form-row-3">
+          <div class="form-group">
+            <label for="inst-network">Netzwerk-Modus</label>
+            <select id="inst-network" class="input-full">
+              <option value="bridge">bridge (Standard)</option>
+              <option value="host">host</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="inst-restart">Neustart-Richtlinie</label>
+            <select id="inst-restart" class="input-full">
+              <option value="unless-stopped">unless-stopped</option>
+              <option value="always">always</option>
+              <option value="no">no</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="inst-devices">Geräte (z. B. /dev/dri für GPU)</label>
+            <input type="text" id="inst-devices" class="input-full mono" placeholder="/dev/dri" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <label>Ports (Host-Port → Container-Port)</label>
+            <button type="button" class="btn-secondary btn-sm" id="btn-add-port-row">+ Port</button>
+          </div>
+          <div id="inst-ports-list" class="dynamic-rows"></div>
+        </div>
+
+        <div class="form-group">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <label>Volume-Mappings (Host-Festplatte → Container-Pfad)</label>
+            <button type="button" class="btn-secondary btn-sm" id="btn-add-vol-row">+ Volume</button>
+          </div>
+          <div id="inst-volumes-list" class="dynamic-rows"></div>
+          <small class="form-hint" id="inst-disk-hints"></small>
+        </div>
+
+        <div class="form-group">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <label>Umgebungsvariablen (KEY=VALUE)</label>
+            <button type="button" class="btn-secondary btn-sm" id="btn-add-env-row">+ Variable</button>
+          </div>
+          <div id="inst-env-list" class="dynamic-rows"></div>
+        </div>
+
+        <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;">
+          <input type="checkbox" id="inst-privileged" />
+          Privilegierter Modus (nur bei Bedarf für Hardware-Zugriff)
+        </label>
+
+        <p class="form-hint hidden" id="inst-note"></p>
+        <p class="form-error hidden" id="inst-error"></p>
+
+        <div class="form-actions">
+          <button type="button" class="btn-secondary" data-close-modal="modal-install">Abbrechen</button>
+          <button type="submit" class="btn-primary" id="btn-install-submit">Image laden &amp; Container starten</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Compose Stack Editor -->
+  <div class="modal-backdrop hidden" id="modal-compose">
+    <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-compose-title">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-compose-title">Docker Compose Stack bereitstellen</h3>
+          <p class="panel-subtitle">Multi-Container-YAML einfügen, direkt in Portainer deployen oder für den Portainer Web-Editor kopieren</p>
+        </div>
+        <button class="modal-close" data-close-modal="modal-compose" aria-label="Schließen">&times;</button>
+      </div>
+      <form id="form-compose" class="settings-form">
+        <p class="form-hint" id="compose-portainer-hint"></p>
+        <div class="form-group">
+          <label for="compose-stack-name">Stack-Name</label>
+          <input type="text" id="compose-stack-name" class="input-full mono" placeholder="z. B. immich" required />
+        </div>
+        <div class="form-group">
+          <label for="compose-yaml">docker-compose.yml</label>
+          <textarea id="compose-yaml" class="code-editor mono" rows="15" required></textarea>
+        </div>
+        <p class="form-error hidden" id="compose-error"></p>
+        <div class="form-actions" style="flex-wrap:wrap;">
+          <button type="button" class="btn-secondary" id="btn-compose-copy">YAML für Portainer kopieren</button>
+          <div style="display:flex;gap:8px;margin-left:auto;">
+            <button type="button" class="btn-secondary" data-close-modal="modal-compose">Abbrechen</button>
+            <button type="submit" class="btn-primary" id="btn-compose-submit">Stack starten</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: File Text Editor -->
+  <div class="modal-backdrop hidden" id="modal-text-editor">
+    <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-editor-title">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-editor-title">Datei bearbeiten</h3>
+          <p class="panel-subtitle mono" id="modal-editor-path"></p>
+        </div>
+        <button class="modal-close" data-close-modal="modal-text-editor" aria-label="Schließen">&times;</button>
+      </div>
+      <textarea id="text-editor-area" class="code-editor mono" rows="18"></textarea>
+      <div class="form-actions">
+        <span class="save-feedback" id="editor-save-msg"></span>
+        <button type="button" class="btn-secondary" data-close-modal="modal-text-editor">Schließen</button>
+        <button type="button" class="btn-primary" id="btn-editor-save">Speichern</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Copy / Move Destination Picker -->
+  <div class="modal-backdrop hidden" id="modal-copy-move">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-cm-title">
+      <div class="modal-header">
+        <h3 id="modal-cm-title">Zielordner wählen</h3>
+        <button class="modal-close" data-close-modal="modal-copy-move" aria-label="Schließen">&times;</button>
+      </div>
+      <form id="form-copy-move" class="settings-form">
+        <input type="hidden" id="cm-action" />
+        <div class="form-group">
+          <label for="cm-dest-input">Ziel-Verzeichnis</label>
+          <input type="text" id="cm-dest-input" class="input-full mono" required />
+        </div>
+        <div id="cm-quick-roots" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+        <div class="form-actions">
+          <button type="button" class="btn-secondary" data-close-modal="modal-copy-move">Abbrechen</button>
+          <button type="submit" class="btn-primary" id="cm-submit-btn">Ausführen</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Media File Preview (Photo / Video) -->
+  <div class="modal-backdrop hidden" id="modal-preview">
+    <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-preview-title">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-preview-title">Vorschau</h3>
+          <p class="panel-subtitle mono" id="modal-preview-path"></p>
+        </div>
+        <div class="modal-header-actions">
+          <a class="btn-secondary btn-sm" id="btn-preview-download" href="#" download style="text-decoration:none;">Herunterladen</a>
+          <button class="modal-close" data-close-modal="modal-preview" aria-label="Schließen">&times;</button>
+        </div>
+      </div>
+      <div class="media-preview-stage" id="media-preview-stage"></div>
+    </div>
+  </div>
+
+  <!-- Modal: Container Logs -->
+  <div class="modal-backdrop hidden" id="modal-logs">
+    <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-logs-title">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-logs-title">Container-Logs</h3>
+          <p class="panel-subtitle mono" id="modal-logs-subtitle"></p>
+        </div>
+        <div class="modal-header-actions">
+          <button class="btn-secondary btn-sm" id="btn-refresh-logs">Aktualisieren</button>
+          <button class="modal-close" data-close-modal="modal-logs" aria-label="Schließen">&times;</button>
+        </div>
+      </div>
+      <pre class="logs-viewer mono" id="logs-content">Lade Logs…</pre>
+    </div>
+  </div>
+
+  <!-- Modal: Interactive Browser Terminal -->
+  <div class="modal-backdrop hidden" id="modal-terminal">
+    <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-terminal-title">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-terminal-title">Container-Terminal</h3>
+          <p class="panel-subtitle mono" id="modal-terminal-subtitle"></p>
+        </div>
+        <div class="modal-header-actions">
+          <button class="btn-secondary btn-sm" id="btn-terminal-clear">Leeren</button>
+          <button class="modal-close" data-close-modal="modal-terminal" aria-label="Schließen">&times;</button>
+        </div>
+      </div>
+      <div class="terminal-screen mono" id="terminal-screen" tabindex="0" aria-label="Interaktives Terminal"></div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

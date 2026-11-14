@@ -1,0 +1,62 @@
+services:
+  homeserver-dashboard:
+    # Portainer-Tipp: Bei Deployment über "Portainer -> Stacks -> Repository" funktioniert 'build: .'.
+    # Wenn du den Stack direkt im Portainer Web-Editor einfügst, nutze:
+    # build: https://github.com/FinnH2008/Dashboard.git#main
+    build: .
+    container_name: homeserver-dashboard
+    restart: unless-stopped
+    ports:
+      - "3080:3080"
+    environment:
+      - PORT=3080
+      - SERVER_NAME=Mein Homeserver
+      # 'auto' nutzt Live-Daten sobald Docker-Socket/Host-Mounts vorhanden sind (alternativ: 'live' oder 'demo')
+      - DEMO_MODE=auto
+      # Kommagetrennte Liste der Medien-Ordner im Container (für Mediathek-Analyse & Dateimanager)
+      - MEDIA_PATHS=/mnt/fotos,/mnt/filme,/mnt/serien,/mnt/backup
+      # Explizite Mountpoints, die immer als Festplatten angezeigt werden sollen
+      - DISK_MOUNTS=/mnt/fotos,/mnt/filme,/mnt/serien,/mnt/backup
+      # Voller CasaOS-Ersatz: Container starten/stoppen/updaten/installieren & Terminal
+      - ALLOW_DOCKER_CONTROL=true
+      # Dateimanager-Schreibrechte (Hochladen, Ordner, Kopieren, Verschieben, Text-Editor, Löschen)
+      - ALLOW_FILE_WRITE=true
+      # Optional: Festplatten über das Dashboard mounten/formatieren (erfordert privileged: true)
+      - ALLOW_STORAGE_ADMIN=false
+      # Optional: Host-Neustart/Herunterfahren über das Dashboard (erfordert privileged: true + pid: host)
+      - ALLOW_HOST_POWER=false
+      # Optional: Passwortschutz für die Web-Oberfläche aktivieren (leer = kein Passwort)
+      - DASHBOARD_PASSWORD=
+      # Optional: Portainer API-Integration (alternativ unter Einstellungen im Dashboard eintragen)
+      - PORTAINER_URL=
+      - PORTAINER_API_KEY=
+    volumes:
+      # Persistente Speicherung für Dienste, Compose-Stacks, SMB-Config & Festplatten-Namen
+      # In Portainer empfiehlt sich ein absoluter Host-Pfad z. B. /opt/stacks/dashboard/data:/app/data
+      - dashboard_data:/app/data
+
+      # Docker Socket (für Portainer-Container, App Store, Compose Stacks & Browser-Terminal)
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # Host-Systemmetriken (CPU, RAM, Netzwerk-Durchsatz, Temperaturen, Hostname)
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /etc/hostname:/host/etc/hostname:ro
+
+      # ------------------------------------------------------------------
+      # DEINE FESTPLATTEN (Passe die Pfade links an deinen Linux-Server an!)
+      # ------------------------------------------------------------------
+      # - /mnt/fotos:/mnt/fotos
+      # - /mnt/filme:/mnt/filme
+      # - /mnt/serien:/mnt/serien
+      # - /mnt/backup:/mnt/backup
+
+    # Optional für SMART-Temperaturen, Festplatten-Mount/Format & Host-Reboot:
+    # privileged: true
+    # pid: host
+    # volumes:
+    #   - /etc/fstab:/host/etc/fstab
+
+volumes:
+  dashboard_data:

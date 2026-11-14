@@ -1,0 +1,55 @@
+{
+  "serverName": "Heimserver NAS",
+  "services": [
+    {
+      "id": "immich",
+      "name": "Immich",
+      "category": "Fotos & Backup",
+      "url": "http://localhost:2283",
+      "containerMatch": "immich",
+      "description": "Foto- & Video-Mediathek mit Handy-Sync"
+    },
+    {
+      "id": "jellyfin",
+      "name": "Jellyfin",
+      "category": "Filme & Serien",
+      "url": "http://localhost:8096",
+      "containerMatch": "jellyfin",
+      "description": "Medienserver für 4K-Videos & Musik"
+    },
+    {
+      "id": "nextcloud",
+      "name": "Nextcloud",
+      "category": "Cloud & Dateien",
+      "url": "http://localhost:8080",
+      "containerMatch": "nextcloud",
+      "description": "Persönliche Cloud, Dokumente & Sync"
+    },
+    {
+      "id": "paperless",
+      "name": "Paperless-ngx",
+      "category": "Dokumente",
+      "url": "http://localhost:8000",
+      "containerMatch": "paperless",
+      "description": "Digitales Dokumentenarchiv mit OCR"
+    },
+    {
+      "id": "portainer",
+      "name": "Portainer",
+      "category": "Docker Verwaltung",
+      "url": "http://localhost:9000",
+      "containerMatch": "portainer",
+      "description": "Container- & Stack-Management"
+    },
+    {
+      "id": "adguard",
+      "name": "AdGuard Home",
+      "category": "Netzwerk & DNS",
+      "url": "http://localhost:3000",
+      "containerMatch": "adguard",
+      "description": "Netzwerkweiter Werbe- & Tracker-Blocker"
+    }
+  ],
+  "diskLabels": {},
+  "mediaPaths": []
+}
