@@ -1979,20 +1979,21 @@
     document.getElementById('btn-add-vol-row').addEventListener('click', () => addVolumeRow());
     document.getElementById('btn-add-env-row').addEventListener('click', () => addEnvRow());
 
-    const openComposeModal = (stackName = '', yamlText = '') => {
+    const openComposeModal = (stackName = '', yamlText = '', customHint = '') => {
       document.getElementById('compose-error').classList.add('hidden');
       document.getElementById('compose-stack-name').value = stackName;
       document.getElementById('compose-yaml').value = yamlText;
       const pConnected = Boolean(state.snapshot?.portainer?.connected);
       const hintEl = document.getElementById('compose-portainer-hint');
       const submitBtn = document.getElementById('btn-compose-submit');
-      if (pConnected) {
+      if (customHint) {
+        hintEl.textContent = customHint;
+      } else if (pConnected) {
         hintEl.textContent = 'Portainer API verbunden: Dieser Stack wird direkt als verwalteter Portainer-Stack angelegt (kein „Limited“-Status).';
-        submitBtn.textContent = 'In Portainer deployen';
       } else {
         hintEl.textContent = 'Tipp: Kopiere das YAML direkt in Portainer (Stacks → Add stack) oder verbinde dein Portainer API-Token unter Einstellungen.';
-        submitBtn.textContent = 'Lokal als Compose starten';
       }
+      submitBtn.textContent = pConnected ? 'In Portainer deployen' : 'Lokal als Compose starten';
       openModal('modal-compose');
     };
     window.__openComposeModal = openComposeModal;
@@ -2047,9 +2048,46 @@
       }
     });
 
+    const BIGBEAR_UPSTREAM_IMAGES = {
+      jellyfin: 'lscr.io/linuxserver/jellyfin:latest',
+      plex: 'lscr.io/linuxserver/plex:latest',
+      immich: 'ghcr.io/immich-app/immich-server:release',
+      photoprism: 'photoprism/photoprism:latest',
+      nextcloud: 'nextcloud:stable-apache',
+      filebrowser: 'filebrowser/filebrowser:latest',
+      syncthing: 'lscr.io/linuxserver/syncthing:latest',
+      duplicati: 'lscr.io/linuxserver/duplicati:latest',
+      paperless: 'ghcr.io/paperless-ngx/paperless-ngx:latest',
+      vaultwarden: 'vaultwarden/server:latest',
+      adguard: 'adguard/adguardhome:latest',
+      'nginx-proxy-manager': 'jc21/nginx-proxy-manager:latest',
+      'uptime-kuma': 'louislam/uptime-kuma:1',
+      'home-assistant': 'ghcr.io/home-assistant/home-assistant:stable',
+      homeassistant: 'ghcr.io/home-assistant/home-assistant:stable',
+      qbittorrent: 'lscr.io/linuxserver/qbittorrent:latest',
+      portainer: 'portainer/portainer-ce:latest'
+    };
+
     document.getElementById('btn-export-compose-yaml').addEventListener('click', () => {
       const name = (document.getElementById('inst-name').value.trim() || 'mein-dienst').replace(/[^a-zA-Z0-9_-]/g, '-');
-      const image = document.getElementById('inst-image').value.trim() || 'nginx:alpine';
+      const rawImage = document.getElementById('inst-image').value.trim() || 'nginx:alpine';
+      let finalImage = rawImage;
+      let migrationHint = '';
+      let yamlNote = '';
+
+      if (/bigbeartechworld|big-bear/i.test(rawImage)) {
+        const lower = `${rawImage} ${name}`.toLowerCase();
+        const matchedKey = Object.keys(BIGBEAR_UPSTREAM_IMAGES).find((k) => lower.includes(k));
+        if (matchedKey) {
+          finalImage = BIGBEAR_UPSTREAM_IMAGES[matchedKey];
+          yamlNote = `# BigBear-Image (${rawImage}) automatisch auf offizielles Original-Image umgestellt (Volume-Pfade prüfen!)`;
+          migrationHint = `BigBearCasaOS-Image erkannt und auf offizielles Original-Image (${finalImage}) umgestellt. Bitte Volume-Pfade vor dem Start kurz prüfen.`;
+        } else {
+          yamlNote = `# HINWEIS: BigBearCasaOS-Image erkannt — bitte durch das offizielle Upstream-Image ersetzen`;
+          migrationHint = `BigBearCasaOS-Image (${rawImage}) erkannt — bitte im YAML auf das offizielle Original-Image ändern, bevor du in Portainer deployst.`;
+        }
+      }
+
       const networkMode = document.getElementById('inst-network').value;
       const restartPolicy = document.getElementById('inst-restart').value || 'unless-stopped';
       const privileged = document.getElementById('inst-privileged').checked;
@@ -2071,19 +2109,17 @@
           k: r.querySelector('.env-key').value.trim(),
           v: r.querySelector('.env-val').value
         }))
-        .filter((e) => e.k);
+        .filter((e) => e.k && e.k !== 'PATH');
       const devices = document.getElementById('inst-devices').value
         .split(',')
         .map((d) => d.trim())
         .filter(Boolean);
 
-      const lines = [
-        'services:',
-        `  ${name}:`,
-        `    image: ${image}`,
-        `    container_name: ${name}`,
-        `    restart: ${restartPolicy}`
-      ];
+      const lines = ['services:', `  ${name}:`];
+      if (yamlNote) lines.push(`    ${yamlNote}`);
+      lines.push(`    image: ${finalImage}`);
+      lines.push(`    container_name: ${name}`);
+      lines.push(`    restart: ${restartPolicy}`);
       if (networkMode === 'host') lines.push('    network_mode: host');
       if (privileged) lines.push('    privileged: true');
       if (ports.length > 0 && networkMode !== 'host') {
@@ -2105,7 +2141,7 @@
 
       closeModal('modal-install');
       if (window.__openComposeModal) {
-        window.__openComposeModal(name, lines.join('\n') + '\n');
+        window.__openComposeModal(name, lines.join('\n') + '\n', migrationHint);
       }
     });
 
