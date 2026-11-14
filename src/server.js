@@ -211,9 +211,10 @@ function serveStatic(reqPath, res) {
       return;
     }
     const ext = path.extname(fullPath).toLowerCase();
+    const isCodeAsset = ext === '.html' || ext === '.js' || ext === '.css';
     res.writeHead(200, {
       'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-      'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600'
+      'Cache-Control': isCodeAsset ? 'no-cache, must-revalidate' : 'public, max-age=3600'
     });
     res.end(content);
   });
@@ -221,6 +222,13 @@ function serveStatic(reqPath, res) {
 
 try {
   collectSystemMetrics();
+  setTimeout(() => {
+    try {
+      collectSystemMetrics();
+    } catch {
+      // ignore warmup errors
+    }
+  }, 150);
 } catch {
   // ignore initial warmup errors
 }
@@ -272,24 +280,41 @@ const server = http.createServer(async (req, res) => {
         Connection: 'keep-alive',
         'X-Accel-Buffering': 'no'
       });
+      res.write(': stream-open\n\n');
 
       let closed = false;
-      const pushSnapshot = async () => {
+      let tickTimer = null;
+      let keepaliveTimer = null;
+      const STREAM_INTERVAL_MS = 1000;
+
+      const scheduleNext = () => {
+        if (closed) return;
+        tickTimer = setTimeout(runTick, STREAM_INTERVAL_MS);
+      };
+
+      const runTick = async () => {
         if (closed) return;
         try {
           const snapshot = await buildSnapshot(mode, false);
           if (!closed) res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
         } catch (err) {
           if (!closed) res.write(`event: error\ndata: ${JSON.stringify({ message: err.message })}\n\n`);
+        } finally {
+          scheduleNext();
         }
       };
 
-      await pushSnapshot();
-      const timer = setInterval(pushSnapshot, 2000);
+      keepaliveTimer = setInterval(() => {
+        if (!closed) res.write(': keepalive\n\n');
+      }, 15000);
+
       req.on('close', () => {
         closed = true;
-        clearInterval(timer);
+        if (tickTimer) clearTimeout(tickTimer);
+        if (keepaliveTimer) clearInterval(keepaliveTimer);
       });
+
+      await runTick();
       return;
     }
 

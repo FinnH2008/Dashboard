@@ -119,37 +119,31 @@ async function scanDirectory(rootDir, state, depth = 0) {
   }
 }
 
-async function collectMediaStats(configMediaPaths = [], forceRefresh = false) {
-  const paths = resolveMediaPaths(configMediaPaths);
-  const cacheKey = paths.join('|');
-  const now = Date.now();
+let mediaScanPromise = null;
 
-  if (!forceRefresh && mediaCache.data && mediaCache.key === cacheKey && now - mediaCache.timestamp < CACHE_TTL_MS) {
-    return mediaCache.data;
-  }
+function buildEmptyMediaPlaceholder(configured, scannedPaths = [], scanning = false) {
+  return {
+    configured,
+    scanning,
+    scannedPaths,
+    totalBytes: 0,
+    totalFiles: 0,
+    truncated: false,
+    scannedAt: new Date().toISOString(),
+    categories: [
+      { id: 'photos', label: 'Fotos & RAW', bytes: 0, count: 0, percent: 0 },
+      { id: 'videos', label: 'Videos & Filme', bytes: 0, count: 0, percent: 0 },
+      { id: 'audio', label: 'Musik & Audio', bytes: 0, count: 0, percent: 0 },
+      { id: 'backups', label: 'Dokumente & Backups', bytes: 0, count: 0, percent: 0 },
+      { id: 'other', label: 'Sonstiges', bytes: 0, count: 0, percent: 0 }
+    ],
+    folders: [],
+    recentFiles: []
+  };
+}
 
-  if (paths.length === 0) {
-    const emptyResult = {
-      configured: false,
-      scannedPaths: [],
-      totalBytes: 0,
-      totalFiles: 0,
-      truncated: false,
-      scannedAt: new Date().toISOString(),
-      categories: [
-        { id: 'photos', label: 'Fotos & RAW', bytes: 0, count: 0, percent: 0 },
-        { id: 'videos', label: 'Videos & Filme', bytes: 0, count: 0, percent: 0 },
-        { id: 'audio', label: 'Musik & Audio', bytes: 0, count: 0, percent: 0 },
-        { id: 'backups', label: 'Dokumente & Backups', bytes: 0, count: 0, percent: 0 },
-        { id: 'other', label: 'Sonstiges', bytes: 0, count: 0, percent: 0 }
-      ],
-      folders: [],
-      recentFiles: []
-    };
-    mediaCache = { key: cacheKey, timestamp: now, scanning: false, data: emptyResult };
-    return emptyResult;
-  }
-
+async function runMediaScan(paths, cacheKey) {
+  mediaCache.scanning = true;
   const state = {
     startedAt: Date.now(),
     maxDurationMs: 6000,
@@ -213,6 +207,7 @@ async function collectMediaStats(configMediaPaths = [], forceRefresh = false) {
 
   const result = {
     configured: true,
+    scanning: false,
     scannedPaths: paths,
     totalBytes: state.totalBytes,
     totalFiles: state.totalFiles,
@@ -225,6 +220,49 @@ async function collectMediaStats(configMediaPaths = [], forceRefresh = false) {
 
   mediaCache = { key: cacheKey, timestamp: Date.now(), scanning: false, data: result };
   return result;
+}
+
+async function collectMediaStats(configMediaPaths = [], forceRefresh = false) {
+  const paths = resolveMediaPaths(configMediaPaths);
+  const cacheKey = paths.join('|');
+  const now = Date.now();
+
+  if (paths.length === 0) {
+    const emptyResult = buildEmptyMediaPlaceholder(false, [], false);
+    mediaCache = { key: cacheKey, timestamp: now, scanning: false, data: emptyResult };
+    return emptyResult;
+  }
+
+  const hasValidCache = Boolean(mediaCache.data && mediaCache.key === cacheKey);
+  const isFresh = hasValidCache && now - mediaCache.timestamp < CACHE_TTL_MS;
+
+  if (!forceRefresh && isFresh) {
+    return mediaCache.data;
+  }
+
+  if (forceRefresh) {
+    if (mediaScanPromise) {
+      await mediaScanPromise.catch(() => {});
+    }
+    mediaScanPromise = runMediaScan(paths, cacheKey).finally(() => {
+      mediaScanPromise = null;
+    });
+    return mediaScanPromise;
+  }
+
+  // Non-blocking background refresh so /api/snapshot & /api/stream stay <50ms
+  if (!mediaScanPromise) {
+    mediaScanPromise = runMediaScan(paths, cacheKey)
+      .catch(() => {})
+      .finally(() => {
+        mediaScanPromise = null;
+      });
+  }
+
+  if (hasValidCache) {
+    return { ...mediaCache.data, scanning: true };
+  }
+  return buildEmptyMediaPlaceholder(true, paths, true);
 }
 
 module.exports = {

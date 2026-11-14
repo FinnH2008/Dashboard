@@ -101,12 +101,19 @@ async function runDf() {
   return [];
 }
 
+let lsblkCache = { timestamp: 0, data: null };
+const LSBLK_CACHE_TTL_MS = 30_000;
+let smartRefreshInFlight = false;
+
 async function runLsblk() {
+  if (lsblkCache.data && Date.now() - lsblkCache.timestamp < LSBLK_CACHE_TTL_MS) {
+    return lsblkCache.data;
+  }
   try {
     const { stdout } = await execFileAsync(
       'lsblk',
       ['-J', '-b', '-o', 'NAME,KNAME,SIZE,TYPE,MOUNTPOINT,FSTYPE,MODEL,SERIAL,TRAN,ROTA'],
-      { timeout: 3000 }
+      { timeout: 2500 }
     );
     const parsed = JSON.parse(stdout);
     const flat = [];
@@ -136,9 +143,10 @@ async function runLsblk() {
     }
 
     walk(parsed.blockdevices || []);
+    lsblkCache = { timestamp: Date.now(), data: flat };
     return flat;
   } catch {
-    return [];
+    return lsblkCache.data || [];
   }
 }
 
@@ -185,39 +193,51 @@ function getDiskIoRates() {
   return rates;
 }
 
-async function querySmartInfo(blockDevices) {
+function querySmartInfo(blockDevices) {
   const now = Date.now();
-  if (now - smartCache.timestamp < SMART_CACHE_TTL_MS && Object.keys(smartCache.byDevice).length > 0) {
+  if (now - smartCache.timestamp < SMART_CACHE_TTL_MS || smartRefreshInFlight) {
     return smartCache.byDevice;
   }
 
-  const results = {};
   const physicalDisks = blockDevices.filter(
     (d) => d.type === 'disk' && !d.name.startsWith('loop') && !d.name.startsWith('ram') && !d.name.startsWith('zram')
   );
 
-  await Promise.all(
-    physicalDisks.slice(0, 12).map(async (disk) => {
-      try {
-        const { stdout } = await execFileAsync('smartctl', ['-H', '-A', '-j', disk.devPath], { timeout: 2500 });
-        const data = JSON.parse(stdout);
-        const passed = data.smart_status?.passed;
-        const temp = data.temperature?.current ?? null;
-        const powerOnHours = data.power_on_time?.hours ?? null;
-        results[disk.name] = {
-          status: passed === true ? 'Gesund' : passed === false ? 'Warnung' : 'Unbekannt',
-          healthy: passed !== false,
-          temperatureCelsius: Number.isFinite(temp) ? temp : null,
-          powerOnHours: Number.isFinite(powerOnHours) ? powerOnHours : null
-        };
-      } catch {
-        // smartctl missing or needs CAP_SYS_RAWIO / privileged device access
-      }
-    })
-  );
+  if (physicalDisks.length === 0) {
+    smartCache = { timestamp: now, byDevice: {} };
+    return smartCache.byDevice;
+  }
 
-  smartCache = { timestamp: now, byDevice: results };
-  return results;
+  smartRefreshInFlight = true;
+  (async () => {
+    const results = {};
+    try {
+      await Promise.all(
+        physicalDisks.slice(0, 12).map(async (disk) => {
+          try {
+            const { stdout } = await execFileAsync('smartctl', ['-H', '-A', '-j', disk.devPath], { timeout: 2500 });
+            const data = JSON.parse(stdout);
+            const passed = data.smart_status?.passed;
+            const temp = data.temperature?.current ?? null;
+            const powerOnHours = data.power_on_time?.hours ?? null;
+            results[disk.name] = {
+              status: passed === true ? 'Gesund' : passed === false ? 'Warnung' : 'Unbekannt',
+              healthy: passed !== false,
+              temperatureCelsius: Number.isFinite(temp) ? temp : null,
+              powerOnHours: Number.isFinite(powerOnHours) ? powerOnHours : null
+            };
+          } catch {
+            // smartctl missing or needs CAP_SYS_RAWIO / privileged device access
+          }
+        })
+      );
+      smartCache = { timestamp: Date.now(), byDevice: results };
+    } finally {
+      smartRefreshInFlight = false;
+    }
+  })();
+
+  return smartCache.byDevice;
 }
 
 function classifyDiskType(lsblkMatch, fsType, mountpoint) {

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const MAX_HISTORY = 32;
+  const MAX_HISTORY = 60;
   const CATEGORY_COLORS = {
     photos: '#d97e38',
     videos: '#4c8cd6',
@@ -28,6 +28,10 @@
     snapshot: null,
     history: [],
     eventSource: null,
+    pollTimer: null,
+    watchdogTimer: null,
+    lastSnapshotAt: 0,
+    transport: 'connecting', // 'connecting' | 'sse' | 'polling'
     activeLogContainerId: null,
     // Files
     filesPath: '/',
@@ -194,11 +198,78 @@
   }
 
   // ==================== STREAMING & SNAPSHOTS ====================
+  function updateLiveIndicator() {
+    const dot = document.getElementById('live-dot');
+    const txt = document.getElementById('live-status-text');
+    if (!dot || !txt) return;
+
+    if (state.paused) {
+      dot.classList.add('paused');
+      txt.textContent = 'Pausiert';
+      return;
+    }
+
+    if (!state.snapshot) {
+      dot.classList.add('paused');
+      txt.textContent = 'Verbinde…';
+      return;
+    }
+
+    dot.classList.remove('paused');
+    txt.textContent = state.transport === 'polling' ? 'Echtzeit (Sync)' : 'Echtzeit';
+  }
+
+  async function fetchSnapshotOnce() {
+    if (state.paused) return false;
+    try {
+      const modeQuery = state.mode ? `?mode=${encodeURIComponent(state.mode)}` : '';
+      const res = await fetch(`/api/snapshot${modeQuery}`, { cache: 'no-store' });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (!state.paused) {
+        if (state.transport === 'connecting') state.transport = 'polling';
+        handleSnapshot(data);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function stopPollingFallback() {
+    if (state.pollTimer) {
+      clearInterval(state.pollTimer);
+      state.pollTimer = null;
+    }
+  }
+
+  function startPollingFallback() {
+    if (state.pollTimer) return;
+    if (state.transport !== 'sse') state.transport = 'polling';
+    updateLiveIndicator();
+    state.pollTimer = setInterval(() => {
+      if (!state.paused && Date.now() - state.lastSnapshotAt >= 900) {
+        fetchSnapshotOnce();
+      }
+    }, 1100);
+  }
+
   function connectStream() {
     if (state.eventSource) {
       state.eventSource.close();
       state.eventSource = null;
     }
+    if (state.watchdogTimer) {
+      clearInterval(state.watchdogTimer);
+      state.watchdogTimer = null;
+    }
+    stopPollingFallback();
+
+    state.transport = 'connecting';
+    updateLiveIndicator();
+
+    // Instant initial snapshot so UI never sits at zeroes waiting for SSE handshake
+    fetchSnapshotOnce();
 
     const modeQuery = state.mode ? `?mode=${encodeURIComponent(state.mode)}` : '';
     const es = new EventSource(`/api/stream${modeQuery}`);
@@ -207,42 +278,58 @@
     es.onmessage = (event) => {
       if (state.paused) return;
       try {
-        handleSnapshot(JSON.parse(event.data));
+        const parsed = JSON.parse(event.data);
+        state.transport = 'sse';
+        stopPollingFallback();
+        handleSnapshot(parsed);
       } catch {
-        // ignore
+        // ignore malformed chunk
       }
     };
 
     es.onerror = () => {
-      const dot = document.getElementById('live-dot');
-      if (!state.paused) dot.classList.add('paused');
+      if (!state.paused) {
+        state.transport = 'polling';
+        startPollingFallback();
+      }
+      updateLiveIndicator();
     };
+
+    // Fallback watchdog: if reverse proxy buffers SSE for >3s, run live HTTP polling transparently
+    state.watchdogTimer = setInterval(() => {
+      if (state.paused) return;
+      if (Date.now() - state.lastSnapshotAt > 3200) {
+        startPollingFallback();
+      }
+    }, 2000);
   }
 
   function handleSnapshot(data) {
+    if (!data || !data.system) return;
     if (!state.mode) state.mode = data.mode || 'live';
     state.snapshot = data;
+    state.lastSnapshotAt = Date.now();
 
-    document.getElementById('live-dot').classList.toggle('paused', state.paused);
+    updateLiveIndicator();
 
     const pointNow = {
       ts: Date.now(),
-      cpu: data.system.cpu.usagePercent || 0,
-      ram: data.system.memory.usedPercent || 0,
-      netRxMB: (data.system.network.rxBytesPerSec || 0) / (1024 * 1024),
-      netTxMB: (data.system.network.txBytesPerSec || 0) / (1024 * 1024),
-      diskReadMB: (data.storage.totals.readBytesPerSec || 0) / (1024 * 1024),
-      diskWriteMB: (data.storage.totals.writeBytesPerSec || 0) / (1024 * 1024)
+      cpu: Number(data.system?.cpu?.usagePercent) || 0,
+      ram: Number(data.system?.memory?.usedPercent) || 0,
+      netRxMB: (Number(data.system?.network?.rxBytesPerSec) || 0) / (1024 * 1024),
+      netTxMB: (Number(data.system?.network?.txBytesPerSec) || 0) / (1024 * 1024),
+      diskReadMB: (Number(data.storage?.totals?.readBytesPerSec) || 0) / (1024 * 1024),
+      diskWriteMB: (Number(data.storage?.totals?.writeBytesPerSec) || 0) / (1024 * 1024)
     };
 
     if (state.history.length === 0 && data.mode === 'demo') {
       for (let i = MAX_HISTORY - 1; i >= 1; i -= 1) {
-        const waveA = Math.sin(i * 0.42) * 4.1 + Math.cos(i * 0.24) * 2.1;
-        const waveB = Math.cos(i * 0.35) * 1.8;
-        const netMult = Math.max(0.45, 0.85 + Math.sin(i * 0.52) * 0.32);
-        const ioMult = Math.max(0.4, 0.82 + Math.cos(i * 0.48) * 0.35);
+        const waveA = Math.sin(i * 0.25) * 4.1 + Math.cos(i * 0.14) * 2.1;
+        const waveB = Math.cos(i * 0.2) * 1.8;
+        const netMult = Math.max(0.45, 0.85 + Math.sin(i * 0.31) * 0.32);
+        const ioMult = Math.max(0.4, 0.82 + Math.cos(i * 0.28) * 0.35);
         state.history.push({
-          ts: pointNow.ts - i * 2000,
+          ts: pointNow.ts - i * 1000,
           cpu: Math.max(4, Math.min(96, pointNow.cpu + waveA)),
           ram: Math.max(12, Math.min(95, pointNow.ram + waveB)),
           netRxMB: Math.max(0.5, pointNow.netRxMB * netMult),
@@ -678,8 +765,10 @@
     const subtitle = document.getElementById('media-summary-subtitle');
     if (!media.configured) {
       subtitle.textContent = 'Keine Medien-Ordner konfiguriert (Einstellungen → Speicherpfade)';
+    } else if (media.scanning && (!media.totalFiles || media.totalFiles === 0)) {
+      subtitle.textContent = `Scanne ${media.scannedPaths.length} Medien-Ordner im Hintergrund…`;
     } else {
-      subtitle.textContent = `${media.scannedPaths.length} Ordner gescannt${media.truncated ? ' (Teil-Scan)' : ''}`;
+      subtitle.textContent = `${media.scannedPaths.length} Ordner gescannt${media.truncated ? ' (Teil-Scan)' : ''}${media.scanning ? ' · aktualisiere…' : ''}`;
     }
 
     document.getElementById('donut-total-size').textContent = formatBytesDecimal(media.totalBytes);
@@ -1822,8 +1911,8 @@
     document.getElementById('banner-switch-live').addEventListener('click', () => setMode('live'));
     document.getElementById('btn-pause').addEventListener('click', () => {
       state.paused = !state.paused;
-      document.getElementById('live-status-text').textContent = state.paused ? 'Pausiert' : 'Live';
-      document.getElementById('live-dot').classList.toggle('paused', state.paused);
+      updateLiveIndicator();
+      if (!state.paused) fetchSnapshotOnce();
     });
 
     // Telemetry Chart Tabs
@@ -2691,7 +2780,15 @@
 
     document.getElementById('btn-logout').addEventListener('click', async () => {
       await fetch('/api/auth/logout', { method: 'POST' });
-      if (state.eventSource) state.eventSource.close();
+      if (state.eventSource) {
+        state.eventSource.close();
+        state.eventSource = null;
+      }
+      if (state.watchdogTimer) {
+        clearInterval(state.watchdogTimer);
+        state.watchdogTimer = null;
+      }
+      stopPollingFallback();
       document.getElementById('auth-overlay').classList.remove('hidden');
     });
 

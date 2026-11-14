@@ -110,11 +110,11 @@ function formatPorts(ports = []) {
   return list;
 }
 
+let statsRefreshInFlight = false;
+let lastStatsRefreshTs = 0;
+const STATS_REFRESH_MS = 2200;
+
 async function fetchContainerStats(id) {
-  const cached = statsCache.get(id);
-  if (cached && Date.now() - cached.ts < 3500) {
-    return cached.data;
-  }
   try {
     const raw = await dockerJson('GET', `/containers/${id}/stats?stream=false`, 2500);
     const parsed = {
@@ -124,11 +124,31 @@ async function fetchContainerStats(id) {
     statsCache.set(id, { ts: Date.now(), data: parsed });
     return parsed;
   } catch {
-    return {
+    return statsCache.get(id)?.data || {
       cpuPercent: 0,
       memory: { usedBytes: 0, limitBytes: 0, percent: 0 }
     };
   }
+}
+
+function triggerStatsRefresh(runningIds) {
+  const now = Date.now();
+  if (statsRefreshInFlight || runningIds.length === 0 || now - lastStatsRefreshTs < STATS_REFRESH_MS) {
+    return;
+  }
+  statsRefreshInFlight = true;
+  lastStatsRefreshTs = now;
+  (async () => {
+    try {
+      const batchSize = 6;
+      for (let i = 0; i < runningIds.length; i += batchSize) {
+        const batch = runningIds.slice(i, i + batchSize);
+        await Promise.all(batch.map((id) => fetchContainerStats(id)));
+      }
+    } finally {
+      statsRefreshInFlight = false;
+    }
+  })();
 }
 
 async function collectDockerContainers() {
@@ -143,18 +163,15 @@ async function collectDockerContainers() {
   }
 
   try {
-    const rawList = await dockerJson('GET', '/containers/json?all=true', 3000);
+    const rawList = await dockerJson('GET', '/containers/json?all=true', 2500);
     const runningIds = rawList.filter((c) => c.State === 'running').map((c) => c.Id);
+    triggerStatsRefresh(runningIds);
 
     const statsById = {};
-    const batchSize = 6;
-    for (let i = 0; i < runningIds.length; i += batchSize) {
-      const batch = runningIds.slice(i, i + batchSize);
-      const results = await Promise.all(batch.map((id) => fetchContainerStats(id)));
-      batch.forEach((id, idx) => {
-        statsById[id] = results[idx];
-      });
-    }
+    runningIds.forEach((id) => {
+      const cached = statsCache.get(id);
+      if (cached) statsById[id] = cached.data;
+    });
 
     const containers = rawList.map((c) => {
       const name = (c.Names?.[0] || c.Id.slice(0, 12)).replace(/^\//, '');

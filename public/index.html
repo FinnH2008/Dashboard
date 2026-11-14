@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/styles.css?v=2" />
 </head>
 <body>
   <!-- Optional Auth Gate Overlay -->
@@ -124,8 +124,8 @@
             </button>
 
             <button class="icon-btn" id="btn-pause" title="Live-Aktualisierung pausieren / fortsetzen">
-              <span class="live-dot" id="live-dot"></span>
-              <span id="live-status-text" class="hide-sm">Live</span>
+              <span class="live-dot paused" id="live-dot"></span>
+              <span id="live-status-text" class="hide-sm">Verbinde…</span>
             </button>
 
             <button class="icon-btn" id="btn-theme" title="Hell / Dunkel umschalten" aria-label="Theme umschalten">
@@ -963,6 +963,6 @@
     </div>
   </div>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=2"></script>
 </body>
 </html>

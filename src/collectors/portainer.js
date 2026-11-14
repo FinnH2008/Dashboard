@@ -158,6 +158,8 @@ function getDemoPortainerStatus(containers = []) {
   };
 }
 
+let portainerRefreshInFlight = false;
+
 async function fetchPortainerStatus(config, containers = [], isDemo = false) {
   if (isDemo) {
     return getDemoPortainerStatus(containers);
@@ -183,56 +185,85 @@ async function fetchPortainerStatus(config, containers = [], isDemo = false) {
   }
 
   const cacheKey = `${baseUrl}|${apiKey.slice(0, 8)}|${config?.portainerEndpointId || ''}`;
-  if (portainerCache.data && portainerCache.key === cacheKey && Date.now() - portainerCache.ts < PORTAINER_CACHE_TTL_MS) {
+  const isFresh = portainerCache.data && portainerCache.key === cacheKey && Date.now() - portainerCache.ts < PORTAINER_CACHE_TTL_MS;
+  if (isFresh) {
     return portainerCache.data;
   }
 
-  try {
-    const { endpointId, endpointName } = await resolveEndpoint(baseUrl, apiKey, config?.portainerEndpointId);
-    const rawStacks = await portainerRequest('GET', baseUrl, apiKey, '/api/stacks');
-    const stacks = (Array.isArray(rawStacks) ? rawStacks : [])
-      .filter((s) => !s.EndpointId || Number(s.EndpointId) === Number(endpointId))
-      .map((s) => {
-        const matchingContainers = (containers || []).filter((c) => c.stackName === s.Name);
-        const runningCount = matchingContainers.filter((c) => c.state === 'running').length;
-        const typeLabel = s.Type === 1 ? 'Swarm' : s.Type === 3 ? 'Kubernetes' : 'Compose';
-        return {
-          id: s.Id,
-          name: s.Name,
-          type: typeLabel,
-          status: s.Status,
-          statusLabel: s.Status === 1 ? 'Aktiv' : 'Inaktiv',
-          endpointId: s.EndpointId || endpointId,
-          containerCount: matchingContainers.length,
-          runningCount,
-          deepLink: `${baseUrl}/#!/${s.EndpointId || endpointId}/docker/stacks/${encodeURIComponent(s.Name)}?id=${s.Id}&type=${s.Type || 2}&regular=true`
-        };
-      });
+  if (!portainerRefreshInFlight) {
+    portainerRefreshInFlight = true;
+    (async () => {
+      try {
+        const { endpointId, endpointName } = await resolveEndpoint(baseUrl, apiKey, config?.portainerEndpointId);
+        const rawStacks = await portainerRequest('GET', baseUrl, apiKey, '/api/stacks');
+        const stacks = (Array.isArray(rawStacks) ? rawStacks : [])
+          .filter((s) => !s.EndpointId || Number(s.EndpointId) === Number(endpointId))
+          .map((s) => {
+            const matchingContainers = (containers || []).filter((c) => c.stackName === s.Name);
+            const runningCount = matchingContainers.filter((c) => c.state === 'running').length;
+            const typeLabel = s.Type === 1 ? 'Swarm' : s.Type === 3 ? 'Kubernetes' : 'Compose';
+            return {
+              id: s.Id,
+              name: s.Name,
+              type: typeLabel,
+              status: s.Status,
+              statusLabel: s.Status === 1 ? 'Aktiv' : 'Inaktiv',
+              endpointId: s.EndpointId || endpointId,
+              containerCount: matchingContainers.length,
+              runningCount,
+              deepLink: `${baseUrl}/#!/${s.EndpointId || endpointId}/docker/stacks/${encodeURIComponent(s.Name)}?id=${s.Id}&type=${s.Type || 2}&regular=true`
+            };
+          });
 
-    const result = {
-      configured: true,
-      connected: true,
-      url: baseUrl,
-      detectedUrl,
-      endpointId,
-      endpointName,
-      error: null,
-      stacks
-    };
-    portainerCache = { ts: Date.now(), key: cacheKey, data: result };
-    return result;
-  } catch (err) {
-    return {
-      configured: true,
-      connected: false,
-      url: baseUrl,
-      detectedUrl,
-      endpointId: config?.portainerEndpointId || 1,
-      endpointName: 'local',
-      error: err.message,
-      stacks: []
-    };
+        portainerCache = {
+          ts: Date.now(),
+          key: cacheKey,
+          data: {
+            configured: true,
+            connected: true,
+            url: baseUrl,
+            detectedUrl,
+            endpointId,
+            endpointName,
+            error: null,
+            stacks
+          }
+        };
+      } catch (err) {
+        portainerCache = {
+          ts: Date.now(),
+          key: cacheKey,
+          data: {
+            configured: true,
+            connected: false,
+            url: baseUrl,
+            detectedUrl,
+            endpointId: config?.portainerEndpointId || 1,
+            endpointName: 'local',
+            error: err.message,
+            stacks: []
+          }
+        };
+      } finally {
+        portainerRefreshInFlight = false;
+      }
+    })();
   }
+
+  if (portainerCache.data && portainerCache.key === cacheKey) {
+    return portainerCache.data;
+  }
+
+  return {
+    configured: true,
+    connected: false,
+    url: baseUrl,
+    detectedUrl,
+    endpointId: config?.portainerEndpointId || 1,
+    endpointName: 'local',
+    error: 'Verbinde mit Portainer…',
+    stacks: []
+  };
 }
 
 async function testPortainerConnection({ url, apiKey, endpointId }) {
