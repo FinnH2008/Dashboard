@@ -106,9 +106,16 @@ function assertAllowedPath(targetPath, roots) {
     throw err;
   }
   const abs = path.resolve(targetPath);
-  const targetReal = fs.existsSync(abs)
-    ? fs.realpathSync(abs)
-    : path.join(fs.realpathSync(path.dirname(abs)), path.basename(abs));
+  let targetReal;
+  try {
+    targetReal = fs.existsSync(abs)
+      ? fs.realpathSync(abs)
+      : path.join(fs.realpathSync(path.dirname(abs)), path.basename(abs));
+  } catch {
+    const err = new Error('Pfad oder übergeordneter Ordner existiert nicht.');
+    err.statusCode = 404;
+    throw err;
+  }
 
   const isInside = roots.some((root) => targetReal === root || targetReal.startsWith(root + path.sep));
   if (!isInside) {
@@ -117,6 +124,19 @@ function assertAllowedPath(targetPath, roots) {
     throw err;
   }
   return targetReal;
+}
+
+async function statExisting(targetPath) {
+  try {
+    return await fsp.stat(targetPath);
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
+      const notFound = new Error('Datei oder Ordner existiert nicht.');
+      notFound.statusCode = 404;
+      throw notFound;
+    }
+    throw err;
+  }
 }
 
 async function listLiveDirectory(requestedPath, configMediaPaths = []) {
@@ -154,8 +174,12 @@ async function listLiveDirectory(requestedPath, configMediaPaths = []) {
   }
 
   const realDir = assertAllowedPath(requestedPath, roots);
-  const stat = await fsp.stat(realDir);
-  if (!stat.isDirectory()) throw new Error('Pfad ist kein Verzeichnis');
+  const stat = await statExisting(realDir);
+  if (!stat.isDirectory()) {
+    const err = new Error('Pfad ist kein Verzeichnis');
+    err.statusCode = 400;
+    throw err;
+  }
 
   const entries = await fsp.readdir(realDir, { withFileTypes: true });
   const items = [];
@@ -200,10 +224,25 @@ async function listLiveDirectory(requestedPath, configMediaPaths = []) {
   };
 }
 
+function pipeReadStream(fileStream, res) {
+  const cleanup = () => {
+    if (!fileStream.destroyed) fileStream.destroy();
+  };
+  res.once('close', cleanup);
+  fileStream.on('error', () => {
+    cleanup();
+    if (!res.headersSent) {
+      res.writeHead(500);
+    }
+    if (!res.writableEnded) res.end();
+  });
+  fileStream.pipe(res);
+}
+
 async function streamLiveFile(req, res, requestedPath, configMediaPaths = [], forceDownload = false) {
   const roots = getAllowedRoots(configMediaPaths);
   const realFile = assertAllowedPath(requestedPath, roots);
-  const stat = await fsp.stat(realFile);
+  const stat = await statExisting(realFile);
   if (!stat.isFile()) {
     res.writeHead(404);
     res.end('Datei nicht gefunden');
@@ -216,7 +255,8 @@ async function streamLiveFile(req, res, requestedPath, configMediaPaths = [], fo
   const headers = {
     'Content-Type': mime,
     'Accept-Ranges': 'bytes',
-    'Cache-Control': 'no-cache'
+    'Cache-Control': 'no-cache',
+    'X-Content-Type-Options': 'nosniff'
   };
 
   if (forceDownload) {
@@ -229,15 +269,18 @@ async function streamLiveFile(req, res, requestedPath, configMediaPaths = [], fo
     if (match) {
       const start = match[1] ? parseInt(match[1], 10) : 0;
       const end = match[2] ? Math.min(stat.size - 1, parseInt(match[2], 10)) : stat.size - 1;
-      if (start <= end && start < stat.size) {
+      if (Number.isFinite(start) && Number.isFinite(end) && start >= 0 && start <= end && start < stat.size) {
         res.writeHead(206, {
           ...headers,
           'Content-Range': `bytes ${start}-${end}/${stat.size}`,
           'Content-Length': end - start + 1
         });
-        fs.createReadStream(realFile, { start, end }).pipe(res);
+        pipeReadStream(fs.createReadStream(realFile, { start, end }), res);
         return;
       }
+      res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` });
+      res.end();
+      return;
     }
   }
 
@@ -245,7 +288,7 @@ async function streamLiveFile(req, res, requestedPath, configMediaPaths = [], fo
     ...headers,
     'Content-Length': stat.size
   });
-  fs.createReadStream(realFile).pipe(res);
+  pipeReadStream(fs.createReadStream(realFile), res);
 }
 
 async function createLiveFolder(parentDir, folderName, configMediaPaths = []) {
@@ -255,7 +298,16 @@ async function createLiveFolder(parentDir, folderName, configMediaPaths = []) {
   const roots = getAllowedRoots(configMediaPaths);
   const realParent = assertAllowedPath(parentDir, roots);
   const target = path.join(realParent, cleanName);
-  await fsp.mkdir(target, { recursive: false });
+  try {
+    await fsp.mkdir(target, { recursive: false });
+  } catch (err) {
+    if (err.code === 'EEXIST') {
+      const dupErr = new Error(`Ordner "${cleanName}" existiert bereits.`);
+      dupErr.statusCode = 409;
+      throw dupErr;
+    }
+    throw err;
+  }
   return { ok: true, path: target };
 }
 
@@ -265,8 +317,14 @@ async function renameLiveItem(targetPath, newName, configMediaPaths = []) {
   if (!cleanName || cleanName === '.' || cleanName === '..') throw new Error('Ungültiger Name');
   const roots = getAllowedRoots(configMediaPaths);
   const realTarget = assertAllowedPath(targetPath, roots);
+  await statExisting(realTarget);
   if (roots.includes(realTarget)) throw new Error('Stammordner kann nicht umbenannt werden.');
   const nextPath = path.join(path.dirname(realTarget), cleanName);
+  if (fs.existsSync(nextPath) && nextPath !== realTarget) {
+    const dupErr = new Error(`"${cleanName}" existiert im Zielordner bereits.`);
+    dupErr.statusCode = 409;
+    throw dupErr;
+  }
   await fsp.rename(realTarget, nextPath);
   return { ok: true, path: nextPath };
 }
@@ -276,14 +334,20 @@ async function copyOrMoveLiveItems(sources, destDir, move = false, configMediaPa
   if (!Array.isArray(sources) || sources.length === 0) throw new Error('Keine Dateien ausgewählt.');
   const roots = getAllowedRoots(configMediaPaths);
   const realDest = assertAllowedPath(destDir, roots);
-  const destStat = await fsp.stat(realDest);
+  const destStat = await statExisting(realDest);
   if (!destStat.isDirectory()) throw new Error('Ziel ist kein Verzeichnis.');
 
   for (const src of sources) {
     const realSrc = assertAllowedPath(src, roots);
+    await statExisting(realSrc);
     if (roots.includes(realSrc) && move) throw new Error('Stammordner kann nicht verschoben werden.');
     const target = path.join(realDest, path.basename(realSrc));
     if (realSrc === target) continue;
+    if (target === realSrc || target.startsWith(realSrc + path.sep)) {
+      const err = new Error('Ein Ordner kann nicht in sich selbst kopiert oder verschoben werden.');
+      err.statusCode = 400;
+      throw err;
+    }
 
     if (move) {
       try {
@@ -310,6 +374,7 @@ async function deleteLiveItems(paths, configMediaPaths = []) {
   const roots = getAllowedRoots(configMediaPaths);
   for (const targetPath of list) {
     const realTarget = assertAllowedPath(targetPath, roots);
+    await statExisting(realTarget);
     if (roots.includes(realTarget)) throw new Error('Stammordner kann nicht gelöscht werden.');
     await fsp.rm(realTarget, { recursive: true, force: false });
   }
@@ -322,6 +387,7 @@ async function saveLiveUpload(targetDir, rawFilename, buffer, configMediaPaths =
   if (!cleanName || cleanName === '.' || cleanName === '..') throw new Error('Ungültiger Dateiname');
   const roots = getAllowedRoots(configMediaPaths);
   const realDir = assertAllowedPath(targetDir, roots);
+  await statExisting(realDir);
   const destPath = path.join(realDir, cleanName);
   await fsp.writeFile(destPath, buffer);
   return { ok: true, path: destPath, sizeBytes: buffer.length };
@@ -330,7 +396,7 @@ async function saveLiveUpload(targetDir, rawFilename, buffer, configMediaPaths =
 async function readLiveTextFile(targetPath, configMediaPaths = []) {
   const roots = getAllowedRoots(configMediaPaths);
   const realFile = assertAllowedPath(targetPath, roots);
-  const st = await fsp.stat(realFile);
+  const st = await statExisting(realFile);
   if (!st.isFile()) throw new Error('Keine Datei');
   if (st.size > 2 * 1024 * 1024) throw new Error('Datei zu groß für den Browser-Editor (Max 2 MB).');
   const content = await fsp.readFile(realFile, 'utf8');
@@ -359,11 +425,17 @@ async function streamZipDownload(paths, res, configMediaPaths = []) {
     'Content-Disposition': 'attachment; filename="homeserver-archiv.zip"'
   });
 
-  const zipProc = spawn('zip', ['-r', '-', ...relNames], { cwd: parentDir });
+  const zipProc = spawn('zip', ['-r', '-', ...relNames], {
+    cwd: parentDir,
+    stdio: ['ignore', 'pipe', 'ignore']
+  });
   zipProc.stdout.pipe(res);
+  res.once('close', () => {
+    if (!zipProc.killed) zipProc.kill('SIGTERM');
+  });
   zipProc.on('error', () => {
     if (!res.headersSent) res.writeHead(500);
-    res.end();
+    if (!res.writableEnded) res.end();
   });
 }
 
@@ -371,13 +443,14 @@ async function extractLiveArchive(archivePath, configMediaPaths = []) {
   if (!ALLOW_WRITE) throw new Error('Schreibzugriff ist deaktiviert.');
   const roots = getAllowedRoots(configMediaPaths);
   const realArchive = assertAllowedPath(archivePath, roots);
+  await statExisting(realArchive);
   const destDir = path.dirname(realArchive);
   const lower = realArchive.toLowerCase();
 
   if (lower.endsWith('.zip')) {
     await execFileAsync('unzip', ['-o', realArchive, '-d', destDir], { timeout: 120_000 });
   } else if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz') || lower.endsWith('.tar')) {
-    await execFileAsync('tar', ['-xf', realArchive, '-C', destDir], { timeout: 120_000 });
+    await execFileAsync('tar', ['--no-same-owner', '-xf', realArchive, '-C', destDir], { timeout: 120_000 });
   } else {
     throw new Error('Unterstützte Formate zum Entpacken: .zip, .tar, .tar.gz, .tgz');
   }

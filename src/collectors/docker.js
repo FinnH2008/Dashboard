@@ -173,6 +173,11 @@ async function collectDockerContainers() {
       if (cached) statsById[id] = cached.data;
     });
 
+    const activeIdSet = new Set(rawList.map((c) => c.Id));
+    for (const cachedId of statsCache.keys()) {
+      if (!activeIdSet.has(cachedId)) statsCache.delete(cachedId);
+    }
+
     const containers = rawList.map((c) => {
       const name = (c.Names?.[0] || c.Id.slice(0, 12)).replace(/^\//, '');
       const stats = statsById[c.Id] || {
@@ -319,7 +324,8 @@ async function inspectContainerConfig(containerId) {
     const parts = b.split(':');
     return {
       hostPath: parts[0] || '',
-      containerPath: parts[1] || ''
+      containerPath: parts[1] || '',
+      mode: parts.slice(2).join(':') || ''
     };
   });
 
@@ -345,7 +351,11 @@ async function inspectContainerConfig(containerId) {
     devices,
     ports,
     volumes,
-    env
+    env,
+    labels: info.Config?.Labels || {},
+    cmd: Array.isArray(info.Config?.Cmd) ? info.Config.Cmd : null,
+    entrypoint: info.Config?.Entrypoint ?? null,
+    capAdd: Array.isArray(info.HostConfig?.CapAdd) ? info.HostConfig.CapAdd : null
   };
 }
 
@@ -361,6 +371,10 @@ async function createAndStartContainer({
   networkMode = 'bridge',
   privileged = false,
   devices = [],
+  labels = null,
+  cmd = null,
+  entrypoint = null,
+  capAdd = null,
   skipPull = false
 }) {
   if (!ALLOW_CONTROL) throw new Error('Container-Steuerung ist deaktiviert (ALLOW_DOCKER_CONTROL=true setzen).');
@@ -379,15 +393,25 @@ async function createAndStartContainer({
   if (networkMode !== 'host') {
     for (const p of allPorts) {
       if (!p.hostPort || !p.containerPort) continue;
-      const key = `${p.containerPort}/${p.protocol || 'tcp'}`;
+      const hp = Number(p.hostPort);
+      const cp = Number(p.containerPort);
+      if (!Number.isInteger(hp) || hp < 1 || hp > 65535 || !Number.isInteger(cp) || cp < 1 || cp > 65535) {
+        const err = new Error(`Ungültiger Port: ${p.hostPort}:${p.containerPort}`);
+        err.statusCode = 400;
+        throw err;
+      }
+      const key = `${cp}/${p.protocol === 'udp' ? 'udp' : 'tcp'}`;
       exposedPorts[key] = {};
-      portBindings[key] = [{ HostPort: String(p.hostPort) }];
+      portBindings[key] = [{ HostPort: String(hp) }];
     }
   }
 
   const binds = volumes
     .filter((v) => v.hostPath && v.containerPath)
-    .map((v) => `${v.hostPath.trim()}:${v.containerPath.trim()}`);
+    .map((v) => {
+      const base = `${v.hostPath.trim()}:${v.containerPath.trim()}`;
+      return v.mode ? `${base}:${v.mode.trim()}` : base;
+    });
 
   const envList = env
     .filter((e) => e.key)
@@ -419,6 +443,19 @@ async function createAndStartContainer({
     }
   };
 
+  if (labels && typeof labels === 'object' && Object.keys(labels).length > 0) {
+    createPayload.Labels = labels;
+  }
+  if (Array.isArray(cmd) && cmd.length > 0) {
+    createPayload.Cmd = cmd;
+  }
+  if (entrypoint !== null && entrypoint !== undefined) {
+    createPayload.Entrypoint = entrypoint;
+  }
+  if (Array.isArray(capAdd) && capAdd.length > 0) {
+    createPayload.HostConfig.CapAdd = capAdd;
+  }
+
   const created = await dockerJson(
     'POST',
     `/containers/create?name=${encodeURIComponent(cleanName)}`,
@@ -439,7 +476,27 @@ async function createAndStartContainer({
 async function recreateOrUpdateContainer(containerId, overrideConfig = null) {
   if (!ALLOW_CONTROL) throw new Error('Container-Steuerung ist deaktiviert.');
   const current = await inspectContainerConfig(containerId);
-  const next = overrideConfig ? { ...current, ...overrideConfig } : current;
+  const next = overrideConfig
+    ? {
+        ...current,
+        ...overrideConfig,
+        labels: current.labels,
+        cmd: current.cmd,
+        entrypoint: current.entrypoint,
+        capAdd: current.capAdd
+      }
+    : current;
+
+  // Preserve bind modes when overrideConfig didn't include mode
+  if (overrideConfig && Array.isArray(overrideConfig.volumes) && Array.isArray(current.volumes)) {
+    next.volumes = overrideConfig.volumes.map((v) => {
+      if (v.mode) return v;
+      const orig = current.volumes.find(
+        (ov) => ov.hostPath === v.hostPath && ov.containerPath === v.containerPath
+      );
+      return orig?.mode ? { ...v, mode: orig.mode } : v;
+    });
+  }
 
   // Pull newest image BEFORE destroying old container so failure doesn't lose running app
   const fullImage = await pullImage(next.image);
@@ -455,6 +512,7 @@ async function recreateOrUpdateContainer(containerId, overrideConfig = null) {
 module.exports = {
   dockerRequest,
   dockerJson,
+  pullImage,
   collectDockerContainers,
   getContainerLogs,
   controlContainer,

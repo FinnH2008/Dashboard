@@ -256,6 +256,10 @@ function classifyDiskType(lsblkMatch, fsType, mountpoint) {
 
 const ALLOW_STORAGE_ADMIN = String(process.env.ALLOW_STORAGE_ADMIN || 'false').toLowerCase() === 'true';
 
+function invalidateStorageCache() {
+  lsblkCache = { timestamp: 0, data: null };
+}
+
 async function mountHostDevice(devPath, mountPoint, persistFstab = true) {
   if (!ALLOW_STORAGE_ADMIN) {
     throw new Error('Festplatten-Verwaltung erfordert ALLOW_STORAGE_ADMIN=true und privileged: true in docker-compose.yml.');
@@ -265,10 +269,14 @@ async function mountHostDevice(devPath, mountPoint, persistFstab = true) {
 
   fs.mkdirSync(mountPoint, { recursive: true });
   await execFileAsync('mount', [devPath, mountPoint], { timeout: 10000 });
+  invalidateStorageCache();
 
   if (persistFstab && fs.existsSync('/host/etc/fstab')) {
     const fstab = fs.readFileSync('/host/etc/fstab', 'utf8');
-    if (!fstab.includes(mountPoint)) {
+    const alreadyMounted = fstab
+      .split('\n')
+      .some((line) => !line.trim().startsWith('#') && line.trim().split(/\s+/)[1] === mountPoint);
+    if (!alreadyMounted) {
       fs.appendFileSync('/host/etc/fstab', `\n${devPath} ${mountPoint} auto defaults,nofail 0 2\n`);
     }
   }
@@ -283,6 +291,7 @@ async function unmountHostPath(mountPoint) {
     throw new Error('Nur Mountpoints unter /mnt oder /media können ausgehängt werden.');
   }
   await execFileAsync('umount', [mountPoint], { timeout: 10000 });
+  invalidateStorageCache();
   return { ok: true };
 }
 
@@ -295,6 +304,7 @@ async function formatHostDevice(devPath, fsType = 'ext4', label = 'homeserver') 
   const cleanLabel = String(label || 'data').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16);
   const args = fsType === 'ext4' ? ['-F', '-L', cleanLabel, devPath] : ['-f', '-L', cleanLabel, devPath];
   await execFileAsync(`mkfs.${fsType}`, args, { timeout: 60000 });
+  invalidateStorageCache();
   return { ok: true, devPath, fsType };
 }
 

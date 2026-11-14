@@ -60,6 +60,27 @@
       .replace(/'/g, '&#39;');
   }
 
+  function safeHref(rawUrl) {
+    const val = String(rawUrl || '').trim();
+    if (!val) return '#';
+    if (val.startsWith('/')) return val;
+    try {
+      const parsed = new URL(val);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return parsed.toString();
+      }
+    } catch {
+      return '#';
+    }
+    return '#';
+  }
+
+  function getDefaultDiskMount(fallback = '/mnt/daten') {
+    const disks = state.snapshot?.storage?.disks || [];
+    const preferred = disks.find((d) => d.mountpoint && d.mountpoint !== '/') || disks[0];
+    return preferred?.mountpoint || fallback;
+  }
+
   function formatBytesDecimal(bytes) {
     if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
     const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
@@ -418,7 +439,15 @@
     if (data) {
       (data.config?.services || []).forEach((s) => {
         if (!q || s.name.toLowerCase().includes(q) || (s.category || '').toLowerCase().includes(q)) {
-          results.push({ type: 'App', label: s.name, sub: s.url, action: () => window.open(resolveServiceUrl(s.url), '_blank') });
+          const targetUrl = safeHref(resolveServiceUrl(s.url));
+          results.push({
+            type: 'App',
+            label: s.name,
+            sub: s.url,
+            action: () => {
+              if (targetUrl !== '#') window.open(targetUrl, '_blank', 'noopener,noreferrer');
+            }
+          });
         }
       });
       (data.docker?.containers || []).forEach((c) => {
@@ -1011,9 +1040,9 @@
           const match = containers.find((c) => c.name.toLowerCase().includes(svc.containerMatch.toLowerCase()));
           if (match) statusClass = match.state === 'running' ? 'up' : 'down';
         }
-        const href = resolveServiceUrl(svc.url);
+        const href = safeHref(resolveServiceUrl(svc.url));
         return `
-          <a class="service-tile" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">
+          <a class="service-tile" href="${escapeHtml(href)}" ${href !== '#' ? 'target="_blank" rel="noopener noreferrer"' : ''}>
             <div>
               <div class="service-top">
                 <div class="service-name-wrap">
@@ -1034,7 +1063,7 @@
   function getPortainerBaseUrl() {
     const p = state.snapshot?.portainer;
     const raw = p?.url || p?.detectedUrl || '';
-    return raw ? resolveServiceUrl(raw).replace(/\/+$/, '') : '';
+    return raw ? safeHref(resolveServiceUrl(raw)).replace(/\/+$/, '') : '';
   }
 
   function renderPortainerBridge(data) {
@@ -1046,7 +1075,7 @@
     if (!badge || !grid) return;
 
     const baseUrl = getPortainerBaseUrl();
-    if (baseUrl) {
+    if (baseUrl && baseUrl !== '#') {
       openBtn.href = baseUrl;
       openBtn.classList.remove('hidden');
     } else {
@@ -1061,7 +1090,11 @@
       badge.textContent = 'Hinweis';
       badge.className = 'tag tag-warn';
       subtitle.textContent = p.error;
-    } else if (baseUrl) {
+    } else if (p.configured && data.config?.hasPortainerApiKey) {
+      badge.textContent = 'Verbinde…';
+      badge.className = 'tag';
+      subtitle.textContent = 'Prüfe Verbindung zur Portainer API…';
+    } else if (baseUrl && baseUrl !== '#') {
       badge.textContent = 'Erkannt (ohne Token)';
       badge.className = 'tag';
       subtitle.textContent = 'Portainer läuft. Hinterlege optional ein API-Token unter Einstellungen, um Stacks direkt hier zu steuern.';
@@ -1086,7 +1119,7 @@
                 <span class="tag">Erkannt</span>
               </div>
               <div style="display:flex;justify-content:flex-end;">
-                ${baseUrl ? `<a class="btn-secondary btn-sm" href="${escapeHtml(baseUrl)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">In Portainer öffnen ↗</a>` : `<button class="btn-secondary btn-sm" data-goto="settings">Token hinterlegen</button>`}
+                ${baseUrl && baseUrl !== '#' ? `<a class="btn-secondary btn-sm" href="${escapeHtml(baseUrl)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">In Portainer öffnen ↗</a>` : `<button class="btn-secondary btn-sm" data-goto="settings">Token hinterlegen</button>`}
               </div>
             </article>
           `)
@@ -1100,7 +1133,7 @@
     grid.innerHTML = stacks
       .map((s) => {
         const isActive = s.status === 1;
-        const deepLink = baseUrl ? resolveServiceUrl(s.deepLink) : '';
+        const deepLink = baseUrl && baseUrl !== '#' && s.deepLink ? safeHref(resolveServiceUrl(s.deepLink)) : '';
         return `
           <article class="stack-inset-item">
             <div class="disk-top">
@@ -1114,7 +1147,7 @@
               ${isActive
                 ? `<button class="btn-secondary btn-sm" data-portainer-stack-action="stop" data-pstack-id="${escapeHtml(s.id)}">Stop</button>`
                 : `<button class="btn-secondary btn-sm" data-portainer-stack-action="start" data-pstack-id="${escapeHtml(s.id)}">Start</button>`}
-              ${deepLink ? `<a class="btn-primary btn-sm" href="${escapeHtml(deepLink)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">In Portainer ↗</a>` : ''}
+              ${deepLink && deepLink !== '#' ? `<a class="btn-primary btn-sm" href="${escapeHtml(deepLink)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">In Portainer ↗</a>` : ''}
             </div>
           </article>
         `;
@@ -1209,8 +1242,8 @@
           ? `<button class="btn-secondary btn-sm" data-edit-container="${escapeHtml(c.id)}" title="Ports/Volumes bearbeiten">Bearbeiten</button>
              <button class="btn-secondary btn-sm" data-update-container="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="Neuestes Image ziehen & neu starten">Update</button>`
           : '';
-        const portainerLink = portainerBase && c.fullId
-          ? `<a class="btn-secondary btn-sm" href="${escapeHtml(`${portainerBase}/#!/${endpointId}/docker/containers/${c.fullId}`)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;" title="In Portainer öffnen">Portainer ↗</a>`
+        const portainerLink = portainerBase && portainerBase !== '#' && c.fullId
+          ? `<a class="btn-secondary btn-sm" href="${escapeHtml(safeHref(`${portainerBase}/#!/${endpointId}/docker/containers/${c.fullId}`))}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;" title="In Portainer öffnen">Portainer ↗</a>`
           : '';
         return `
           <tr>
@@ -1411,15 +1444,23 @@
     wrap.classList.remove('hidden');
 
     let idx = 0;
+    const errors = [];
     const uploadNext = () => {
       if (idx >= files.length) {
         wrap.classList.add('hidden');
+        bar.style.width = '0%';
+        pctEl.textContent = '0%';
         loadFilesDirectory(state.filesPath);
+        if (errors.length > 0) {
+          alert(`Upload teilweise fehlgeschlagen:\n${errors.join('\n')}`);
+        }
         return;
       }
       const file = files[idx];
       idx += 1;
       labelEl.textContent = `Lade hoch (${idx}/${files.length}): ${file.name}`;
+      bar.style.width = '0%';
+      pctEl.textContent = '0%';
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `/api/files/upload?dir=${encodeURIComponent(state.filesPath)}&name=${encodeURIComponent(file.name)}`);
       xhr.upload.onprogress = (ev) => {
@@ -1429,8 +1470,23 @@
           pctEl.textContent = `${pct}%`;
         }
       };
-      xhr.onload = uploadNext;
-      xhr.onerror = uploadNext;
+      xhr.onload = () => {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          let msg = `HTTP ${xhr.status}`;
+          try {
+            const parsed = JSON.parse(xhr.responseText);
+            if (parsed?.error) msg = parsed.error;
+          } catch {
+            // keep status text
+          }
+          errors.push(`${file.name}: ${msg}`);
+        }
+        uploadNext();
+      };
+      xhr.onerror = () => {
+        errors.push(`${file.name}: Netzwerkfehler beim Hochladen`);
+        uploadNext();
+      };
       xhr.send(file);
     };
     uploadNext();
@@ -1582,19 +1638,22 @@
         <option value="tcp" ${protocol === 'tcp' ? 'selected' : ''}>TCP</option>
         <option value="udp" ${protocol === 'udp' ? 'selected' : ''}>UDP</option>
       </select>
-      <button type="button" class="btn-danger-ghost btn-sm" onclick="this.parentElement.remove()">✕</button>
+      <button type="button" class="btn-danger-ghost btn-sm btn-remove-row">✕</button>
     `;
+    row.querySelector('.btn-remove-row').addEventListener('click', () => row.remove());
     document.getElementById('inst-ports-list').appendChild(row);
   }
 
-  function addVolumeRow(hostPath = '', containerPath = '') {
+  function addVolumeRow(hostPath = '', containerPath = '', mode = '') {
     const row = document.createElement('div');
     row.className = 'dynamic-row';
+    row.dataset.volMode = mode || '';
     row.innerHTML = `
-      <input type="text" class="input-full mono vol-host" placeholder="Host-Pfad z. B. /mnt/fotos" value="${escapeHtml(hostPath)}" />
+      <input type="text" class="input-full mono vol-host" placeholder="Host-Pfad z. B. /mnt/daten" value="${escapeHtml(hostPath)}" />
       <input type="text" class="input-full mono vol-container" placeholder="Container-Pfad z. B. /data" value="${escapeHtml(containerPath)}" />
-      <button type="button" class="btn-danger-ghost btn-sm" onclick="this.parentElement.remove()">✕</button>
+      <button type="button" class="btn-danger-ghost btn-sm btn-remove-row">✕</button>
     `;
+    row.querySelector('.btn-remove-row').addEventListener('click', () => row.remove());
     document.getElementById('inst-volumes-list').appendChild(row);
   }
 
@@ -1604,8 +1663,9 @@
     row.innerHTML = `
       <input type="text" class="input-full mono env-key" placeholder="KEY" value="${escapeHtml(key)}" />
       <input type="text" class="input-full mono env-val" placeholder="VALUE" value="${escapeHtml(value)}" />
-      <button type="button" class="btn-danger-ghost btn-sm" onclick="this.parentElement.remove()">✕</button>
+      <button type="button" class="btn-danger-ghost btn-sm btn-remove-row">✕</button>
     `;
+    row.querySelector('.btn-remove-row').addEventListener('click', () => row.remove());
     document.getElementById('inst-env-list').appendChild(row);
   }
 
@@ -1631,7 +1691,7 @@
       document.getElementById('inst-devices').value = (editConfig.devices || []).join(', ');
       document.getElementById('inst-privileged').checked = Boolean(editConfig.privileged);
       (editConfig.ports || []).forEach((p) => addPortRow(p.hostPort, p.containerPort, p.protocol));
-      (editConfig.volumes || []).forEach((v) => addVolumeRow(v.hostPath, v.containerPath));
+      (editConfig.volumes || []).forEach((v) => addVolumeRow(v.hostPath, v.containerPath, v.mode || ''));
       (editConfig.env || []).forEach((e) => addEnvRow(e.key, e.value));
       document.getElementById('inst-note').classList.add('hidden');
     } else if (app) {
@@ -1645,7 +1705,7 @@
       document.getElementById('inst-devices').value = '';
       document.getElementById('inst-privileged').checked = false;
       if (app.defaultPort) addPortRow(app.defaultPort, app.containerPort || app.defaultPort, 'tcp');
-      (app.volumes || []).forEach((v) => addVolumeRow(v.hostDefault, v.containerPath));
+      (app.volumes || []).forEach((v) => addVolumeRow(v.hostDefault, v.containerPath, v.mode || ''));
       (app.env || []).forEach((e) => addEnvRow(e.key, e.value));
 
       const noteEl = document.getElementById('inst-note');
@@ -1667,7 +1727,7 @@
       document.getElementById('inst-privileged').checked = false;
       document.getElementById('inst-note').classList.add('hidden');
       addPortRow('', '', 'tcp');
-      addVolumeRow('/mnt/fotos', '/data');
+      addVolumeRow(getDefaultDiskMount('/mnt/daten'), '/data');
       addEnvRow('TZ', 'Europe/Berlin');
     }
 
@@ -1783,7 +1843,16 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch)
     });
-    if (!res.ok) throw new Error('Speichern fehlgeschlagen');
+    if (!res.ok) {
+      let msg = 'Speichern fehlgeschlagen';
+      try {
+        const d = await res.json();
+        if (d?.error) msg = d.error;
+      } catch {
+        // ignore JSON parse errors
+      }
+      throw new Error(msg);
+    }
     const updated = await res.json();
     if (state.snapshot) {
       state.snapshot.config = updated;
@@ -1916,11 +1985,16 @@
     document.getElementById('btn-files-mkdir').addEventListener('click', async () => {
       const name = prompt('Name des neuen Ordners:');
       if (!name || !name.trim()) return;
-      await fetch(`/api/files/mkdir`, {
+      const res = await fetch(`/api/files/mkdir`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ parentPath: state.filesPath, name: name.trim() })
       });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        alert(d.error || 'Ordner konnte nicht erstellt werden');
+        return;
+      }
       loadFilesDirectory(state.filesPath);
     });
     document.getElementById('btn-files-upload').addEventListener('click', () => document.getElementById('file-upload-input').click());
@@ -1957,7 +2031,7 @@
       document.getElementById('cm-dest-input').value = state.filesPath;
       const roots = state.filesListing?.roots || [];
       document.getElementById('cm-quick-roots').innerHTML = roots
-        .map((r) => `<button type="button" class="btn-secondary btn-sm" onclick="document.getElementById('cm-dest-input').value='${escapeHtml(r.path)}'">${escapeHtml(r.name)}</button>`)
+        .map((r) => `<button type="button" class="btn-secondary btn-sm" data-cm-root="${escapeHtml(r.path)}">${escapeHtml(r.name)}</button>`)
         .join('');
       openModal('modal-copy-move');
     };
@@ -1989,11 +2063,16 @@
     document.getElementById('btn-bulk-delete').addEventListener('click', async () => {
       const paths = [...state.selectedFiles];
       if (!confirm(`${paths.length} ausgewählte Einträge wirklich unwiderruflich löschen?`)) return;
-      await fetch(`/api/files/delete`, {
+      const res = await fetch(`/api/files/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paths })
       });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        alert(d.error || 'Löschen fehlgeschlagen');
+        return;
+      }
       loadFilesDirectory(state.filesPath);
     });
 
@@ -2148,7 +2227,8 @@
       const volumes = Array.from(document.querySelectorAll('#inst-volumes-list .dynamic-row'))
         .map((r) => ({
           host: r.querySelector('.vol-host').value.trim(),
-          cont: r.querySelector('.vol-container').value.trim()
+          cont: r.querySelector('.vol-container').value.trim(),
+          mode: r.dataset.volMode || ''
         }))
         .filter((v) => v.host && v.cont);
       const envs = Array.from(document.querySelectorAll('#inst-env-list .dynamic-row'))
@@ -2175,7 +2255,7 @@
       }
       if (volumes.length > 0) {
         lines.push('    volumes:');
-        volumes.forEach((v) => lines.push(`      - ${v.host}:${v.cont}`));
+        volumes.forEach((v) => lines.push(`      - ${v.host}:${v.cont}${v.mode ? `:${v.mode}` : ''}`));
       }
       if (envs.length > 0) {
         lines.push('    environment:');
@@ -2208,10 +2288,14 @@
           containerPort: row.querySelector('.port-container').value.trim(),
           protocol: row.querySelector('.port-proto').value
         }));
-        const volumes = Array.from(document.querySelectorAll('#inst-volumes-list .dynamic-row')).map((row) => ({
-          hostPath: row.querySelector('.vol-host').value.trim(),
-          containerPath: row.querySelector('.vol-container').value.trim()
-        }));
+        const volumes = Array.from(document.querySelectorAll('#inst-volumes-list .dynamic-row')).map((row) => {
+          const item = {
+            hostPath: row.querySelector('.vol-host').value.trim(),
+            containerPath: row.querySelector('.vol-container').value.trim()
+          };
+          if (row.dataset.volMode) item.mode = row.dataset.volMode;
+          return item;
+        });
         const env = Array.from(document.querySelectorAll('#inst-env-list .dynamic-row')).map((row) => ({
           key: row.querySelector('.env-key').value.trim(),
           value: row.querySelector('.env-val').value
@@ -2306,7 +2390,12 @@
     // SMB Shares
     document.getElementById('btn-add-smb-share').addEventListener('click', () => {
       if (!state.smbData) return;
-      state.smbData.config.shares.push({ id: `share-${Date.now()}`, name: 'Medien', path: '/mnt/fotos', readOnly: false });
+      state.smbData.config.shares.push({
+        id: `share-${Date.now()}`,
+        name: 'Medien',
+        path: getDefaultDiskMount('/mnt/daten'),
+        readOnly: false
+      });
       renderSmbPanel();
     });
     document.getElementById('btn-apply-smb').addEventListener('click', async () => {
@@ -2360,6 +2449,12 @@
     });
 
     document.addEventListener('click', async (e) => {
+      const cmRootBtn = e.target.closest('[data-cm-root]');
+      if (cmRootBtn) {
+        document.getElementById('cm-dest-input').value = cmRootBtn.dataset.cmRoot;
+        return;
+      }
+
       const alertGoto = e.target.closest('[data-alert-goto]');
       if (alertGoto) {
         closeModal('modal-alerts');
@@ -2392,7 +2487,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: extractBtn.dataset.extractFile })
         });
-        if (!res.ok) alert((await res.json()).error);
+        if (!res.ok) alert((await res.json().catch(() => ({}))).error || 'Entpacken fehlgeschlagen');
         else loadFilesDirectory(state.filesPath);
         return;
       }
@@ -2402,11 +2497,16 @@
         const oldName = renameBtn.dataset.fileName;
         const newName = prompt('Neuer Name:', oldName);
         if (!newName || newName.trim() === oldName) return;
-        await fetch(`/api/files/rename`, {
+        const res = await fetch(`/api/files/rename`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: renameBtn.dataset.renameFile, newName: newName.trim() })
         });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          alert(d.error || 'Umbenennen fehlgeschlagen');
+          return;
+        }
         loadFilesDirectory(state.filesPath);
         return;
       }
@@ -2414,11 +2514,16 @@
       const delFileBtn = e.target.closest('[data-delete-file]');
       if (delFileBtn) {
         if (!confirm(`"${delFileBtn.dataset.fileName}" wirklich unwiderruflich löschen?`)) return;
-        await fetch(`/api/files/delete`, {
+        const res = await fetch(`/api/files/delete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: delFileBtn.dataset.deleteFile })
         });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          alert(d.error || 'Löschen fehlgeschlagen');
+          return;
+        }
         loadFilesDirectory(state.filesPath);
         return;
       }
@@ -2464,7 +2569,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ mountPoint: mp })
         });
-        if (!res.ok) alert((await res.json()).error);
+        if (!res.ok) alert((await res.json().catch(() => ({}))).error || 'Aushängen fehlgeschlagen');
         return;
       }
 
@@ -2482,7 +2587,7 @@
         portainerStackBtn.disabled = true;
         try {
           const res = await fetch(`/api/portainer/stacks/${encodeURIComponent(sid)}/${action}`, { method: 'POST' });
-          if (!res.ok) alert((await res.json()).error);
+          if (!res.ok) alert((await res.json().catch(() => ({}))).error || 'Portainer-Aktion fehlgeschlagen');
           else {
             const snapRes = await fetch(`/api/snapshot`);
             if (snapRes.ok) handleSnapshot(await snapRes.json());
@@ -2519,7 +2624,7 @@
         stackActionBtn.disabled = true;
         try {
           const res = await fetch(`/api/compose/${encodeURIComponent(stack)}/${action}`, { method: 'POST' });
-          if (!res.ok) alert((await res.json()).error);
+          if (!res.ok) alert((await res.json().catch(() => ({}))).error || 'Compose-Aktion fehlgeschlagen');
           await loadDeployedStacks();
         } finally {
           stackActionBtn.disabled = false;
@@ -2590,9 +2695,14 @@
         if (action === 'remove' && !confirm(`Container "${dockerActionBtn.dataset.cname || cid}" wirklich löschen?`)) return;
         dockerActionBtn.disabled = true;
         try {
-          await fetch(`/api/docker/${encodeURIComponent(cid)}/${action}`, { method: 'POST' });
-          const snapRes = await fetch(`/api/snapshot`);
-          if (snapRes.ok) handleSnapshot(await snapRes.json());
+          const res = await fetch(`/api/docker/${encodeURIComponent(cid)}/${action}`, { method: 'POST' });
+          if (!res.ok) {
+            const d = await res.json().catch(() => ({}));
+            alert(d.error || 'Container-Aktion fehlgeschlagen');
+          } else {
+            const snapRes = await fetch(`/api/snapshot`);
+            if (snapRes.ok) handleSnapshot(await snapRes.json());
+          }
         } finally {
           dockerActionBtn.disabled = false;
         }
@@ -2618,7 +2728,11 @@
       const delSvcBtn = e.target.closest('[data-delete-service]');
       if (delSvcBtn && state.snapshot) {
         const id = delSvcBtn.dataset.deleteService;
-        await saveConfigPatch({ services: (state.snapshot.config.services || []).filter((s) => s.id !== id) });
+        try {
+          await saveConfigPatch({ services: (state.snapshot.config.services || []).filter((s) => s.id !== id) });
+        } catch (err) {
+          alert(err.message);
+        }
       }
     });
 
@@ -2640,8 +2754,12 @@
       const id = document.getElementById('disk-edit-id').value;
       const label = document.getElementById('disk-edit-label').value.trim();
       if (!id || !label) return;
-      await saveConfigPatch({ diskLabels: { [id]: label } });
-      closeModal('modal-disk');
+      try {
+        await saveConfigPatch({ diskLabels: { [id]: label } });
+        closeModal('modal-disk');
+      } catch (err) {
+        alert(err.message);
+      }
     });
 
     document.getElementById('form-service').addEventListener('submit', async (e) => {
@@ -2660,8 +2778,12 @@
       if (idx >= 0) currentServices[idx] = item;
       else currentServices.push(item);
 
-      await saveConfigPatch({ services: currentServices });
-      closeModal('modal-service');
+      try {
+        await saveConfigPatch({ services: currentServices });
+        closeModal('modal-service');
+      } catch (err) {
+        alert(err.message);
+      }
     });
 
     document.getElementById('btn-goto-portainer-settings').addEventListener('click', () => {
@@ -2697,14 +2819,18 @@
       e.preventDefault();
       const portainerUrl = document.getElementById('input-portainer-url').value.trim();
       const portainerApiKey = document.getElementById('input-portainer-token').value.trim();
+      const msg = document.getElementById('portainer-save-msg');
       const patch = { portainerUrl };
       if (portainerApiKey) patch.portainerApiKey = portainerApiKey;
-      await saveConfigPatch(patch);
-      document.getElementById('input-portainer-token').value = '';
-      const msg = document.getElementById('portainer-save-msg');
-      msg.textContent = 'Portainer gespeichert!';
-      const snapRes = await fetch(`/api/snapshot`);
-      if (snapRes.ok) handleSnapshot(await snapRes.json());
+      try {
+        await saveConfigPatch(patch);
+        document.getElementById('input-portainer-token').value = '';
+        msg.textContent = 'Portainer gespeichert!';
+        const snapRes = await fetch(`/api/snapshot`);
+        if (snapRes.ok) handleSnapshot(await snapRes.json());
+      } catch (err) {
+        msg.textContent = `Fehler: ${err.message}`;
+      }
       setTimeout(() => { msg.textContent = ''; }, 3000);
     });
 
@@ -2712,9 +2838,13 @@
       e.preventDefault();
       const serverName = document.getElementById('input-server-name').value.trim();
       const mediaPaths = document.getElementById('input-media-paths').value.split(',').map((p) => p.trim()).filter(Boolean);
-      await saveConfigPatch({ serverName, mediaPaths });
       const msg = document.getElementById('settings-save-msg');
-      msg.textContent = 'Gespeichert!';
+      try {
+        await saveConfigPatch({ serverName, mediaPaths });
+        msg.textContent = 'Gespeichert!';
+      } catch (err) {
+        msg.textContent = `Fehler: ${err.message}`;
+      }
       setTimeout(() => { msg.textContent = ''; }, 2500);
     });
 
@@ -2729,6 +2859,8 @@
         body: JSON.stringify({ password })
       });
       if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        errEl.textContent = d.error || 'Falsches Passwort.';
         errEl.classList.remove('hidden');
         return;
       }

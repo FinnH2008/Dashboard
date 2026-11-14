@@ -45,6 +45,8 @@ function sendWsText(socket, text) {
   sendWsFrame(socket, Buffer.from(text, 'utf8'), 0x1);
 }
 
+const MAX_WS_FRAME_BYTES = 64 * 1024;
+
 function parseWsFrames(buffer, onMessage, onClose) {
   let offset = 0;
   while (offset + 2 <= buffer.length) {
@@ -63,6 +65,11 @@ function parseWsFrames(buffer, onMessage, onClose) {
       if (cursor + 8 > buffer.length) break;
       payloadLen = Number(buffer.readBigUInt64BE(cursor));
       cursor += 8;
+    }
+
+    if (!Number.isFinite(payloadLen) || payloadLen < 0 || payloadLen > MAX_WS_FRAME_BYTES) {
+      onClose();
+      return Buffer.alloc(0);
     }
 
     const maskLen = masked ? 4 : 0;
@@ -102,6 +109,11 @@ async function attachDockerExecTerminal(wsSocket, containerId) {
     wsSocket.end();
     return;
   }
+  if (!containerId || !/^[a-zA-Z0-9_.-]+$/.test(containerId)) {
+    sendWsText(wsSocket, '\r\n[Fehler] Ungültige Container-ID.\r\n');
+    wsSocket.end();
+    return;
+  }
   if (!fs.existsSync(DOCKER_SOCKET)) {
     sendWsText(wsSocket, '\r\n[Fehler] /var/run/docker.sock nicht verfügbar.\r\n');
     wsSocket.end();
@@ -125,6 +137,8 @@ async function attachDockerExecTerminal(wsSocket, containerId) {
   }
 
   const dockerConn = net.createConnection({ path: DOCKER_SOCKET });
+  dockerConn.setTimeout(0);
+  wsSocket.setTimeout(0);
   const body = JSON.stringify({ Detach: false, Tty: true });
   const rawReq =
     `POST /exec/${execId}/start HTTP/1.1\r\n` +

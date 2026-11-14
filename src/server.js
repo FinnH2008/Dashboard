@@ -8,7 +8,10 @@ const {
   isAuthenticated,
   verifyPassword,
   createSessionCookie,
-  clearSessionCookie
+  clearSessionCookie,
+  checkLoginRateLimit,
+  recordLoginFailure,
+  clearLoginFailures
 } = require('./auth');
 const { attachTerminalUpgrade } = require('./terminal');
 const { collectSystemMetrics, triggerHostPower } = require('./collectors/system');
@@ -80,11 +83,19 @@ function loadAppCatalog() {
   }
 }
 
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'SAMEORIGIN',
+  'Referrer-Policy': 'same-origin'
+};
+
 function sendJson(res, statusCode, payload, extraHeaders = {}) {
+  if (res.headersSent || res.writableEnded) return;
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
+    ...SECURITY_HEADERS,
     ...extraHeaders
   });
   res.end(body);
@@ -93,18 +104,33 @@ function sendJson(res, statusCode, payload, extraHeaders = {}) {
 function readRawBody(req, maxBytes = 1024 * 1024 * 250) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let settled = false;
     const chunks = [];
     req.on('data', (chunk) => {
+      if (settled) return;
       size += chunk.length;
       if (size > maxBytes) {
-        reject(new Error('Datei oder Anfrage überschreitet das Limit (250 MB).'));
-        req.destroy();
+        settled = true;
+        const err = new Error('Datei oder Anfrage überschreitet das Limit (250 MB).');
+        err.statusCode = 413;
+        reject(err);
+        req.pause();
         return;
       }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
+    req.on('end', () => {
+      if (!settled) {
+        settled = true;
+        resolve(Buffer.concat(chunks));
+      }
+    });
+    req.on('error', (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
   });
 }
 
@@ -114,7 +140,9 @@ async function readJsonBody(req, maxBytes = 1024 * 1024 * 2) {
   try {
     return text ? JSON.parse(text) : {};
   } catch {
-    throw new Error('Ungültiges JSON-Format');
+    const err = new Error('Ungültiges JSON-Format');
+    err.statusCode = 400;
+    throw err;
   }
 }
 
@@ -148,20 +176,30 @@ async function buildSnapshot(forceMediaScan = false) {
   };
 }
 
-function serveStatic(reqPath, res) {
+function safeDecodeParam(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    const err = new Error('Ungültige URL-Kodierung');
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
+function serveStatic(reqPath, res, method = 'GET') {
   let cleanPath = reqPath === '/' ? '/index.html' : reqPath;
   cleanPath = path.posix.normalize(cleanPath).replace(/^(\.\.(\/|\\|$))+/, '');
   const fullPath = path.join(PUBLIC_DIR, cleanPath);
 
-  if (!fullPath.startsWith(PUBLIC_DIR)) {
-    res.writeHead(403);
+  if (fullPath !== PUBLIC_DIR && !fullPath.startsWith(PUBLIC_DIR + path.sep)) {
+    res.writeHead(403, SECURITY_HEADERS);
     res.end('Forbidden');
     return;
   }
 
   fs.readFile(fullPath, (err, content) => {
     if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...SECURITY_HEADERS });
       res.end('Not found');
       return;
     }
@@ -169,9 +207,10 @@ function serveStatic(reqPath, res) {
     const isCodeAsset = ext === '.html' || ext === '.js' || ext === '.css';
     res.writeHead(200, {
       'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-      'Cache-Control': isCodeAsset ? 'no-cache, must-revalidate' : 'public, max-age=3600'
+      'Cache-Control': isCodeAsset ? 'no-cache, must-revalidate' : 'public, max-age=3600',
+      ...SECURITY_HEADERS
     });
-    res.end(content);
+    res.end(method === 'HEAD' ? undefined : content);
   });
 }
 
@@ -188,8 +227,15 @@ try {
   // ignore initial warmup errors
 }
 
+const activeSseResponses = new Set();
+
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  let url;
+  try {
+    url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  } catch {
+    return sendJson(res, 400, { error: 'Ungültige Anfrage-URL' });
+  }
   const pathname = url.pathname;
 
   try {
@@ -205,10 +251,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && pathname === '/api/auth/login') {
+      checkLoginRateLimit(req);
       const body = await readJsonBody(req);
       if (!verifyPassword(body.password)) {
+        recordLoginFailure(req);
         return sendJson(res, 401, { error: 'Falsches Passwort' });
       }
+      clearLoginFailures(req);
       return sendJson(res, 200, { ok: true }, { 'Set-Cookie': createSessionCookie() });
     }
 
@@ -227,13 +276,17 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && pathname === '/api/stream') {
+      req.setTimeout(0);
+      res.setTimeout(0);
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache, no-transform',
         Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no'
+        'X-Accel-Buffering': 'no',
+        ...SECURITY_HEADERS
       });
       res.write(': stream-open\n\n');
+      activeSseResponses.add(res);
 
       let closed = false;
       let tickTimer = null;
@@ -406,7 +459,7 @@ const server = http.createServer(async (req, res) => {
 
     const portainerStackMatch = pathname.match(/^\/api\/portainer\/stacks\/([^/]+)\/(start|stop|delete)$/);
     if (req.method === 'POST' && portainerStackMatch) {
-      const stackId = decodeURIComponent(portainerStackMatch[1]);
+      const stackId = safeDecodeParam(portainerStackMatch[1]);
       const action = portainerStackMatch[2];
       const cfg = loadConfig();
       return sendJson(res, 200, await controlPortainerStack(stackId, action, cfg));
@@ -431,7 +484,7 @@ const server = http.createServer(async (req, res) => {
 
     const composeActionMatch = pathname.match(/^\/api\/compose\/([^/]+)\/(up|down|pull|delete)$/);
     if (req.method === 'POST' && composeActionMatch) {
-      const stackName = decodeURIComponent(composeActionMatch[1]);
+      const stackName = safeDecodeParam(composeActionMatch[1]);
       const action = composeActionMatch[2];
       return sendJson(res, 200, await stopOrRemoveStack(stackName, action));
     }
@@ -464,14 +517,14 @@ const server = http.createServer(async (req, res) => {
     // ==================== DOCKER CONTAINER ACTIONS ====================
     const inspectMatch = pathname.match(/^\/api\/docker\/([^/]+)\/inspect$/);
     if (req.method === 'GET' && inspectMatch) {
-      const containerId = decodeURIComponent(inspectMatch[1]);
+      const containerId = safeDecodeParam(inspectMatch[1]);
       const info = await inspectContainerConfig(containerId);
       return sendJson(res, 200, info);
     }
 
     const updateMatch = pathname.match(/^\/api\/docker\/([^/]+)\/(update|recreate)$/);
     if (req.method === 'POST' && updateMatch) {
-      const containerId = decodeURIComponent(updateMatch[1]);
+      const containerId = safeDecodeParam(updateMatch[1]);
       const body = await readJsonBody(req);
       const override = updateMatch[2] === 'recreate' ? body : null;
       const result = await recreateOrUpdateContainer(containerId, override);
@@ -480,7 +533,7 @@ const server = http.createServer(async (req, res) => {
 
     const logsMatch = pathname.match(/^\/api\/docker\/([^/]+)\/logs$/);
     if (req.method === 'GET' && logsMatch) {
-      const containerId = decodeURIComponent(logsMatch[1]);
+      const containerId = safeDecodeParam(logsMatch[1]);
       const tail = Math.min(500, Math.max(20, Number(url.searchParams.get('tail')) || 120));
       const logs = await getContainerLogs(containerId, tail);
       return sendJson(res, 200, { id: containerId, logs });
@@ -488,7 +541,7 @@ const server = http.createServer(async (req, res) => {
 
     const actionMatch = pathname.match(/^\/api\/docker\/([^/]+)\/(start|stop|restart|remove)$/);
     if (req.method === 'POST' && actionMatch) {
-      const containerId = decodeURIComponent(actionMatch[1]);
+      const containerId = safeDecodeParam(actionMatch[1]);
       const action = actionMatch[2];
 
       if (action === 'remove') {
@@ -501,7 +554,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' || req.method === 'HEAD') {
-      return serveStatic(pathname, res);
+      return serveStatic(pathname, res, req.method);
     }
 
     sendJson(res, 405, { error: 'Method not allowed' });
@@ -511,6 +564,29 @@ const server = http.createServer(async (req, res) => {
 });
 
 attachTerminalUpgrade(server);
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Dashboard] Unhandled Rejection:', reason);
+});
+
+function gracefulShutdown(signal) {
+  console.log(`[Dashboard] ${signal} empfangen – beende Verbindungen sauber…`);
+  for (const res of activeSseResponses) {
+    try {
+      res.end();
+    } catch {
+      // ignore already closed streams
+    }
+  }
+  activeSseResponses.clear();
+  server.close(() => {
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(0), 3000).unref();
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 server.listen(PORT, HOST, () => {
   console.log(`Homeserver Dashboard läuft auf http://${HOST}:${PORT}`);

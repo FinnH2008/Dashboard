@@ -23,19 +23,35 @@ function loadSmbConfig() {
 
 function saveSmbConfig(cfg) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  const usedIds = new Set();
+  const shares = [];
+
+  if (Array.isArray(cfg.shares)) {
+    for (const s of cfg.shares) {
+      const cleanName = String(s.name || '').replace(/;/g, '').trim();
+      const cleanPath = String(s.path || '').replace(/;/g, '').trim();
+      if (!cleanName || !cleanPath || !cleanPath.startsWith('/')) continue;
+      let baseId = String(s.id || cleanName).toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || 'share';
+      let uniqueId = baseId;
+      let suffix = 2;
+      while (usedIds.has(uniqueId)) {
+        uniqueId = `${baseId}-${suffix}`;
+        suffix += 1;
+      }
+      usedIds.add(uniqueId);
+      shares.push({
+        id: uniqueId,
+        name: cleanName,
+        path: cleanPath,
+        readOnly: Boolean(s.readOnly)
+      });
+    }
+  }
+
   const clean = {
-    username: String(cfg.username || 'homeserver').trim() || 'homeserver',
-    password: String(cfg.password || ''),
-    shares: Array.isArray(cfg.shares)
-      ? cfg.shares
-          .filter((s) => s.name && s.path)
-          .map((s) => ({
-            id: s.id || String(s.name).toLowerCase().replace(/[^a-z0-9_-]/g, '-'),
-            name: String(s.name).trim(),
-            path: String(s.path).trim(),
-            readOnly: Boolean(s.readOnly)
-          }))
-      : []
+    username: String(cfg.username || 'homeserver').replace(/;/g, '').trim() || 'homeserver',
+    password: String(cfg.password || '').replace(/;/g, ''),
+    shares
   };
   fs.writeFileSync(SMB_FILE, JSON.stringify(clean, null, 2), 'utf8');
   return clean;
@@ -70,6 +86,10 @@ async function applySmbShares(nextConfig) {
     try { await removeContainer(CONTAINER_NAME, true); } catch { /* ignore if absent */ }
     return { ok: true, running: false, shares: [] };
   }
+
+  // Pull Samba image first before tearing down any running container
+  const { pullImage } = require('./docker');
+  await pullImage('dperson/samba:latest');
 
   const volumes = merged.shares.map((s) => ({
     hostPath: s.path,
@@ -107,6 +127,7 @@ async function applySmbShares(nextConfig) {
   await createAndStartContainer({
     name: CONTAINER_NAME,
     image: 'dperson/samba:latest',
+    skipPull: true,
     ports: [
       { hostPort: 139, containerPort: 139, protocol: 'tcp' },
       { hostPort: 445, containerPort: 445, protocol: 'tcp' }

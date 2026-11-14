@@ -1,7 +1,70 @@
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const COOKIE_NAME = 'hs_session';
-const SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+const SECRET_FILE = path.join(DATA_DIR, '.session-secret');
+
+function loadOrCreateSecret() {
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  try {
+    if (fs.existsSync(SECRET_FILE)) {
+      const existing = fs.readFileSync(SECRET_FILE, 'utf8').trim();
+      if (existing.length >= 32) return existing;
+    }
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    const generated = crypto.randomBytes(32).toString('hex');
+    fs.writeFileSync(SECRET_FILE, generated, { mode: 0o600 });
+    return generated;
+  } catch {
+    return crypto.randomBytes(32).toString('hex');
+  }
+}
+
+const SECRET = loadOrCreateSecret();
+
+const loginAttempts = new Map();
+const MAX_ATTEMPTS_WINDOW_MS = 60_000;
+const MAX_ATTEMPTS_PER_WINDOW = 10;
+
+function getClientKey(req) {
+  const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return fwd || req.socket?.remoteAddress || 'unknown';
+}
+
+function checkLoginRateLimit(req) {
+  const key = getClientKey(req);
+  const now = Date.now();
+  const entry = loginAttempts.get(key);
+  if (!entry || now > entry.resetAt) return;
+  if (entry.count >= MAX_ATTEMPTS_PER_WINDOW) {
+    const waitSec = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
+    const err = new Error(`Zu viele Anmeldeversuche. Bitte ${waitSec}s warten.`);
+    err.statusCode = 429;
+    throw err;
+  }
+}
+
+function recordLoginFailure(req) {
+  const key = getClientKey(req);
+  const now = Date.now();
+  const entry = loginAttempts.get(key);
+  if (!entry || now > entry.resetAt) {
+    loginAttempts.set(key, { count: 1, resetAt: now + MAX_ATTEMPTS_WINDOW_MS });
+  } else {
+    entry.count += 1;
+  }
+  if (loginAttempts.size > 500) {
+    for (const [k, v] of loginAttempts.entries()) {
+      if (now > v.resetAt) loginAttempts.delete(k);
+    }
+  }
+}
+
+function clearLoginFailures(req) {
+  loginAttempts.delete(getClientKey(req));
+}
 
 function getConfiguredPassword() {
   return (process.env.DASHBOARD_PASSWORD || '').trim();
@@ -19,7 +82,11 @@ function parseCookies(req) {
     if (idx <= 0) continue;
     const key = part.slice(0, idx).trim();
     const val = part.slice(idx + 1).trim();
-    result[key] = decodeURIComponent(val);
+    try {
+      result[key] = decodeURIComponent(val);
+    } catch {
+      result[key] = val;
+    }
   }
   return result;
 }
@@ -32,7 +99,9 @@ function signToken(payloadObj) {
 
 function verifyToken(token) {
   if (!token || !token.includes('.')) return null;
-  const [payload, sig] = token.split('.');
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [payload, sig] = parts;
   const expectedSig = crypto.createHmac('sha256', SECRET).update(payload).digest('base64url');
   const a = Buffer.from(sig);
   const b = Buffer.from(expectedSig);
@@ -49,9 +118,9 @@ function verifyToken(token) {
 function verifyPassword(candidate) {
   const configured = getConfiguredPassword();
   if (!configured) return true;
-  const a = Buffer.from(String(candidate || ''), 'utf8');
-  const b = Buffer.from(configured, 'utf8');
-  if (a.length !== b.length) return false;
+  // Compare SHA-256 digests so timingSafeEqual works cleanly regardless of length
+  const a = crypto.createHash('sha256').update(String(candidate || ''), 'utf8').digest();
+  const b = crypto.createHash('sha256').update(configured, 'utf8').digest();
   return crypto.timingSafeEqual(a, b);
 }
 
@@ -78,5 +147,8 @@ module.exports = {
   isAuthenticated,
   verifyPassword,
   createSessionCookie,
-  clearSessionCookie
+  clearSessionCookie,
+  checkLoginRateLimit,
+  recordLoginFailure,
+  clearLoginFailures
 };

@@ -108,14 +108,18 @@ async function stopOrRemoveStack(stackName, action = 'down') {
         ? ['compose', '-p', clean, '-f', ymlPath, 'up', '-d']
         : ['compose', '-p', clean, '-f', ymlPath, 'down'];
 
-    const { stdout, stderr } = await execFileAsync('docker', cmdArgs, { timeout: 300_000 });
-    if (action === 'pull') {
-      await execFileAsync('docker', ['compose', '-p', clean, '-f', ymlPath, 'up', '-d'], { timeout: 120_000 });
+    try {
+      const { stdout, stderr } = await execFileAsync('docker', cmdArgs, { timeout: 300_000 });
+      if (action === 'pull') {
+        await execFileAsync('docker', ['compose', '-p', clean, '-f', ymlPath, 'up', '-d'], { timeout: 120_000 });
+      }
+      if (action === 'delete') {
+        await fsp.rm(stackDir, { recursive: true, force: true });
+      }
+      return { ok: true, output: `${stdout}\n${stderr}`.trim() };
+    } catch (err) {
+      throw new Error(`Docker Compose Fehler: ${err.stderr || err.message}`);
     }
-    if (action === 'delete') {
-      await fsp.rm(stackDir, { recursive: true, force: true });
-    }
-    return { ok: true, output: `${stdout}\n${stderr}`.trim() };
   }
 
   if (action === 'delete' && fs.existsSync(stackDir)) {

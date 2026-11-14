@@ -74,6 +74,12 @@ function portainerRequest(method, baseUrl, apiKey, apiPath, bodyObj = null, time
         res.on('data', (c) => chunks.push(c));
         res.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8');
+          if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400) {
+            const loc = res.headers.location || '';
+            const err = new Error(`Portainer API Weiterleitung (${res.statusCode}) – bitte direkt https:// URL verwenden${loc ? ` (${loc})` : ''}.`);
+            err.statusCode = 502;
+            return reject(err);
+          }
           if (res.statusCode && res.statusCode >= 400) {
             let msg = text;
             try {
