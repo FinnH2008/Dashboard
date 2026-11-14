@@ -2047,6 +2047,68 @@
       }
     });
 
+    document.getElementById('btn-export-compose-yaml').addEventListener('click', () => {
+      const name = (document.getElementById('inst-name').value.trim() || 'mein-dienst').replace(/[^a-zA-Z0-9_-]/g, '-');
+      const image = document.getElementById('inst-image').value.trim() || 'nginx:alpine';
+      const networkMode = document.getElementById('inst-network').value;
+      const restartPolicy = document.getElementById('inst-restart').value || 'unless-stopped';
+      const privileged = document.getElementById('inst-privileged').checked;
+      const ports = Array.from(document.querySelectorAll('#inst-ports-list .dynamic-row-3'))
+        .map((r) => ({
+          host: r.querySelector('.port-host').value.trim(),
+          cont: r.querySelector('.port-container').value.trim(),
+          proto: r.querySelector('.port-proto').value
+        }))
+        .filter((p) => p.host && p.cont);
+      const volumes = Array.from(document.querySelectorAll('#inst-volumes-list .dynamic-row'))
+        .map((r) => ({
+          host: r.querySelector('.vol-host').value.trim(),
+          cont: r.querySelector('.vol-container').value.trim()
+        }))
+        .filter((v) => v.host && v.cont);
+      const envs = Array.from(document.querySelectorAll('#inst-env-list .dynamic-row'))
+        .map((r) => ({
+          k: r.querySelector('.env-key').value.trim(),
+          v: r.querySelector('.env-val').value
+        }))
+        .filter((e) => e.k);
+      const devices = document.getElementById('inst-devices').value
+        .split(',')
+        .map((d) => d.trim())
+        .filter(Boolean);
+
+      const lines = [
+        'services:',
+        `  ${name}:`,
+        `    image: ${image}`,
+        `    container_name: ${name}`,
+        `    restart: ${restartPolicy}`
+      ];
+      if (networkMode === 'host') lines.push('    network_mode: host');
+      if (privileged) lines.push('    privileged: true');
+      if (ports.length > 0 && networkMode !== 'host') {
+        lines.push('    ports:');
+        ports.forEach((p) => lines.push(`      - "${p.host}:${p.cont}${p.proto && p.proto !== 'tcp' ? `/${p.proto}` : ''}"`));
+      }
+      if (volumes.length > 0) {
+        lines.push('    volumes:');
+        volumes.forEach((v) => lines.push(`      - ${v.host}:${v.cont}`));
+      }
+      if (envs.length > 0) {
+        lines.push('    environment:');
+        envs.forEach((e) => lines.push(`      - ${e.k}=${e.v}`));
+      }
+      if (devices.length > 0) {
+        lines.push('    devices:');
+        devices.forEach((d) => lines.push(`      - ${d}`));
+      }
+
+      closeModal('modal-install');
+      if (window.__openComposeModal) {
+        window.__openComposeModal(name, lines.join('\n') + '\n');
+      }
+    });
+
     // Install / Edit Container Submit
     document.getElementById('form-install-app').addEventListener('submit', async (e) => {
       e.preventDefault();

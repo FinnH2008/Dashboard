@@ -113,13 +113,13 @@ async function applySmbShares(nextConfig, isDemo = false) {
   }
 
   merged.shares.forEach((s, idx) => {
-    const rw = s.readOnly ? 'no' : 'yes';
+    const readonly = s.readOnly ? 'yes' : 'no';
     const guest = merged.password ? 'no' : 'yes';
-    const userAccess = merged.password ? `;${merged.username}` : '';
+    const users = merged.password ? merged.username : 'all';
     // dperson/samba SHARE format: name;/path;browseable;readonly;guest;users
     env.push({
       key: `SHARE${idx + 1}`,
-      value: `${s.name};/shares/${s.id};yes;${s.readOnly ? 'yes' : 'no'};${guest};${rw === 'yes' ? 'all' : 'none'}${userAccess}`
+      value: `${s.name};/shares/${s.id};yes;${readonly};${guest};${users}`
     });
   });
 
