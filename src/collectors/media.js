@@ -43,8 +43,9 @@ function resolveMediaPaths(configMediaPaths = []) {
     .filter(Boolean);
 
   const combined = [...new Set([...envPaths, ...configMediaPaths])];
-  if (combined.length > 0) {
-    return combined.filter((p) => fs.existsSync(p));
+  const existingExplicit = combined.filter((p) => fs.existsSync(p));
+  if (existingExplicit.length > 0) {
+    return existingExplicit;
   }
 
   // Auto-discover common mount roots if present and non-empty

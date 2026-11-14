@@ -13,10 +13,10 @@ services:
       - SERVER_NAME=Mein Homeserver
       # 'auto' nutzt Live-Daten sobald Docker-Socket/Host-Mounts vorhanden sind (alternativ: 'live' oder 'demo')
       - DEMO_MODE=auto
-      # Kommagetrennte Liste der Medien-Ordner im Container (für Mediathek-Analyse & Dateimanager)
-      - MEDIA_PATHS=/mnt/fotos,/mnt/filme,/mnt/serien,/mnt/backup
-      # Explizite Mountpoints, die immer als Festplatten angezeigt werden sollen
-      - DISK_MOUNTS=/mnt/fotos,/mnt/filme,/mnt/serien,/mnt/backup
+      # Optional: Kommagetrennte Liste eigener Medien-Ordner (leer = automatische Erkennung aller Laufwerke unter /mnt)
+      - MEDIA_PATHS=
+      # Optional: Zusätzliche Mountpoints außerhalb von /mnt (leer = automatische Erkennung)
+      - DISK_MOUNTS=
       # Voller CasaOS-Ersatz: Container starten/stoppen/updaten/installieren & Terminal
       - ALLOW_DOCKER_CONTROL=true
       # Dateimanager-Schreibrechte (Hochladen, Ordner, Kopieren, Verschieben, Text-Editor, Löschen)
@@ -44,13 +44,11 @@ services:
       - /etc/os-release:/host/etc/os-release:ro
       - /etc/hostname:/host/etc/hostname:ro
 
-      # ------------------------------------------------------------------
-      # DEINE FESTPLATTEN (Passe die Pfade links an deinen Linux-Server an!)
-      # ------------------------------------------------------------------
-      # - /mnt/fotos:/mnt/fotos
-      # - /mnt/filme:/mnt/filme
-      # - /mnt/serien:/mnt/serien
-      # - /mnt/backup:/mnt/backup
+      # Alle unter /mnt gemounteten Festplatten automatisch in den Container durchreichen (rslave erkennt Submounts)
+      - /mnt:/mnt:rslave
+
+      # Optional weitere Pfade außerhalb von /mnt (z. B. /media oder /srv/daten):
+      # - /media:/media:rslave
 
     # Optional für SMART-Temperaturen, Festplatten-Mount/Format & Host-Reboot:
     # privileged: true

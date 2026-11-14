@@ -910,6 +910,16 @@
   }
 
   function renderUnmountedDisks(storage) {
+    const missingBanner = document.getElementById('storage-missing-mounts-banner');
+    const missingList = document.getElementById('storage-missing-mounts-list');
+    const missing = storage.missingHostMounts || [];
+    if (missingBanner && missingList) {
+      missingBanner.classList.toggle('hidden', missing.length === 0);
+      if (missing.length > 0) {
+        missingList.textContent = missing.join(' · ');
+      }
+    }
+
     const sec = document.getElementById('unmounted-section');
     const grid = document.getElementById('unmounted-disks-grid');
     const unmounted = storage.unmountedDevices || [];

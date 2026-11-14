@@ -309,6 +309,27 @@ function guessDefaultLabel(mountpoint) {
   return base ? base.charAt(0).toUpperCase() + base.slice(1) : 'Datenträger';
 }
 
+function detectHostMntMounts() {
+  const mountsFile = fs.existsSync('/host/proc/mounts') ? '/host/proc/mounts' : '/proc/mounts';
+  try {
+    const raw = fs.readFileSync(mountsFile, 'utf8');
+    const found = [];
+    for (const line of raw.split('\n')) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 3) continue;
+      const fsType = (parts[2] || '').toLowerCase();
+      if (IGNORED_FS.has(fsType)) continue;
+      const mp = parts[1].replace(/\\040/g, ' ');
+      if (/^\/(mnt|media|disks)\/.+/i.test(mp)) {
+        found.push(mp);
+      }
+    }
+    return [...new Set(found)];
+  } catch {
+    return [];
+  }
+}
+
 async function collectStorageMetrics(customLabels = {}) {
   const [dfEntries, blockDevices] = await Promise.all([runDf(), runLsblk()]);
   const ioRates = getDiskIoRates();
@@ -327,7 +348,7 @@ async function collectStorageMetrics(customLabels = {}) {
     if (seenMounts.has(mp)) continue;
 
     const explicitlyAllowed = allowlist.some((prefix) => mp === prefix || mp.startsWith(prefix + '/'));
-    const isMediaSubmount = /^\/(mnt|media|disks|storage|pool|data|host\/mnt|host\/media)\/[^/]+/i.test(mp);
+    const isMediaSubmount = /^\/(mnt|media|disks|storage|pool|data|host\/mnt|host\/media)\/.+/i.test(mp);
 
     if (!explicitlyAllowed && !(isMediaSubmount && !IGNORED_FS.has(fsType))) {
       if (IGNORED_FS.has(fsType)) continue;
@@ -404,6 +425,9 @@ async function collectStorageMetrics(customLabels = {}) {
     ? Math.round((totals.usedBytes / totals.totalBytes) * 1000) / 10
     : 0;
 
+  const visibleMountSet = new Set(disks.map((d) => d.mountpoint));
+  const missingHostMounts = detectHostMntMounts().filter((mp) => !visibleMountSet.has(mp));
+
   const unmountedDevices = blockDevices
     .filter((d) => {
       if (d.type !== 'disk') return false;
@@ -426,6 +450,7 @@ async function collectStorageMetrics(customLabels = {}) {
     allowAdmin: ALLOW_STORAGE_ADMIN,
     disks,
     unmountedDevices,
+    missingHostMounts,
     totals,
     diskCount: disks.length,
     healthyCount: disks.filter((d) => d.healthy && d.usedPercent < 90).length,

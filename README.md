@@ -47,8 +47,8 @@ services:
       - PORT=3080
       - SERVER_NAME=Mein Homeserver
       - DEMO_MODE=auto
-      - MEDIA_PATHS=/mnt/fotos,/mnt/filme,/mnt/serien,/mnt/backup
-      - DISK_MOUNTS=/mnt/fotos,/mnt/filme,/mnt/serien,/mnt/backup
+      - MEDIA_PATHS=
+      - DISK_MOUNTS=
       - ALLOW_DOCKER_CONTROL=true
       - ALLOW_FILE_WRITE=true
       - ALLOW_STORAGE_ADMIN=false
@@ -64,9 +64,7 @@ services:
       - /sys:/host/sys:ro
       - /etc/os-release:/host/etc/os-release:ro
       - /etc/hostname:/host/etc/hostname:ro
-      # Deine Festplatten:
-      # - /mnt/fotos:/mnt/fotos
-      # - /mnt/filme:/mnt/filme
+      - /mnt:/mnt:rslave
 ```
 
 > **Portainer als Dauerlösung (kein „Limited“-Status):**
