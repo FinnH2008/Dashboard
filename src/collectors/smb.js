@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createAndStartContainer, removeContainer, collectDockerContainers } = require('./docker');
-const { demoInstallContainer, demoRemoveContainer } = require('./demo');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const SMB_FILE = path.join(DATA_DIR, 'smb-shares.json');
@@ -12,12 +11,7 @@ function loadSmbConfig() {
     return {
       username: 'homeserver',
       password: '',
-      shares: [
-        { id: 'fotos', name: 'Fotos', path: '/mnt/fotos', readOnly: false },
-        { id: 'filme', name: 'Filme', path: '/mnt/filme', readOnly: true },
-        { id: 'serien', name: 'Serien', path: '/mnt/serien', readOnly: true },
-        { id: 'backup', name: 'Backup', path: '/mnt/backup', readOnly: false }
-      ]
+      shares: []
     };
   }
   try {
@@ -47,17 +41,11 @@ function saveSmbConfig(cfg) {
   return clean;
 }
 
-async function getSmbStatus(isDemo = false) {
+async function getSmbStatus() {
   const config = loadSmbConfig();
-  let containerRunning = false;
-
-  if (isDemo) {
-    containerRunning = true;
-  } else {
-    const docker = await collectDockerContainers();
-    const match = (docker.containers || []).find((c) => c.name === CONTAINER_NAME);
-    containerRunning = Boolean(match && match.state === 'running');
-  }
+  const docker = await collectDockerContainers();
+  const match = (docker.containers || []).find((c) => c.name === CONTAINER_NAME);
+  const containerRunning = Boolean(match && match.state === 'running');
 
   return {
     containerName: CONTAINER_NAME,
@@ -70,7 +58,7 @@ async function getSmbStatus(isDemo = false) {
   };
 }
 
-async function applySmbShares(nextConfig, isDemo = false) {
+async function applySmbShares(nextConfig) {
   const existing = loadSmbConfig();
   const merged = saveSmbConfig({
     username: nextConfig.username || existing.username,
@@ -79,21 +67,8 @@ async function applySmbShares(nextConfig, isDemo = false) {
   });
 
   if (merged.shares.length === 0) {
-    if (isDemo) demoRemoveContainer(CONTAINER_NAME);
-    else {
-      try { await removeContainer(CONTAINER_NAME, true); } catch { /* ignore if absent */ }
-    }
+    try { await removeContainer(CONTAINER_NAME, true); } catch { /* ignore if absent */ }
     return { ok: true, running: false, shares: [] };
-  }
-
-  if (isDemo) {
-    demoInstallContainer({
-      name: CONTAINER_NAME,
-      image: 'dperson/samba:latest',
-      hostPort: 445,
-      containerPort: 445
-    });
-    return { ok: true, running: true, shares: merged.shares };
   }
 
   const volumes = merged.shares.map((s) => ({

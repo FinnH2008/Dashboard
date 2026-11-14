@@ -20,7 +20,6 @@
   };
 
   const state = {
-    mode: null,
     paused: false,
     activeView: 'overview',
     chartMode: 'compute',
@@ -222,8 +221,7 @@
   async function fetchSnapshotOnce() {
     if (state.paused) return false;
     try {
-      const modeQuery = state.mode ? `?mode=${encodeURIComponent(state.mode)}` : '';
-      const res = await fetch(`/api/snapshot${modeQuery}`, { cache: 'no-store' });
+      const res = await fetch(`/api/snapshot`, { cache: 'no-store' });
       if (!res.ok) return false;
       const data = await res.json();
       if (!state.paused) {
@@ -271,8 +269,7 @@
     // Instant initial snapshot so UI never sits at zeroes waiting for SSE handshake
     fetchSnapshotOnce();
 
-    const modeQuery = state.mode ? `?mode=${encodeURIComponent(state.mode)}` : '';
-    const es = new EventSource(`/api/stream${modeQuery}`);
+    const es = new EventSource(`/api/stream`);
     state.eventSource = es;
 
     es.onmessage = (event) => {
@@ -306,7 +303,6 @@
 
   function handleSnapshot(data) {
     if (!data || !data.system) return;
-    if (!state.mode) state.mode = data.mode || 'live';
     state.snapshot = data;
     state.lastSnapshotAt = Date.now();
 
@@ -322,41 +318,10 @@
       diskWriteMB: (Number(data.storage?.totals?.writeBytesPerSec) || 0) / (1024 * 1024)
     };
 
-    if (state.history.length === 0 && data.mode === 'demo') {
-      for (let i = MAX_HISTORY - 1; i >= 1; i -= 1) {
-        const waveA = Math.sin(i * 0.25) * 4.1 + Math.cos(i * 0.14) * 2.1;
-        const waveB = Math.cos(i * 0.2) * 1.8;
-        const netMult = Math.max(0.45, 0.85 + Math.sin(i * 0.31) * 0.32);
-        const ioMult = Math.max(0.4, 0.82 + Math.cos(i * 0.28) * 0.35);
-        state.history.push({
-          ts: pointNow.ts - i * 1000,
-          cpu: Math.max(4, Math.min(96, pointNow.cpu + waveA)),
-          ram: Math.max(12, Math.min(95, pointNow.ram + waveB)),
-          netRxMB: Math.max(0.5, pointNow.netRxMB * netMult),
-          netTxMB: Math.max(0.2, pointNow.netTxMB * netMult),
-          diskReadMB: Math.max(1, pointNow.diskReadMB * ioMult),
-          diskWriteMB: Math.max(0.5, pointNow.diskWriteMB * ioMult)
-        });
-      }
-    }
-
     state.history.push(pointNow);
     if (state.history.length > MAX_HISTORY) state.history.shift();
 
     renderAll();
-  }
-
-  function setMode(nextMode) {
-    if (state.mode === nextMode) return;
-    state.mode = nextMode;
-    localStorage.setItem('hs_mode', nextMode);
-    state.history = [];
-    state.filesPath = '/';
-    state.selectedFiles.clear();
-    connectStream();
-    if (state.activeView === 'files') loadFilesDirectory('/');
-    if (state.activeView === 'storage') loadSmbStatus();
-    if (state.activeView === 'appstore') loadDeployedStacks();
   }
 
   // ==================== ALERTS & GLOBAL SEARCH ====================
@@ -541,10 +506,6 @@
     document.getElementById('host-ip').textContent = sys.ipAddress;
     document.getElementById('host-subtitle').textContent =
       `${sys.os} · Kernel ${sys.kernel} · Laufzeit ${formatUptime(sys.uptimeSeconds)}`;
-
-    document.getElementById('btn-mode-live').classList.toggle('active', data.mode === 'live');
-    document.getElementById('btn-mode-demo').classList.toggle('active', data.mode === 'demo');
-    document.getElementById('demo-banner').classList.toggle('hidden', data.mode !== 'demo');
   }
 
   function renderKpis(data) {
@@ -982,8 +943,7 @@
 
   // ==================== SMB SHARES ====================
   async function loadSmbStatus() {
-    const mode = state.mode || 'live';
-    const res = await fetch(`/api/smb/status?mode=${encodeURIComponent(mode)}`);
+    const res = await fetch(`/api/smb/status`);
     if (!res.ok) return;
     state.smbData = await res.json();
     renderSmbPanel();
@@ -996,7 +956,7 @@
     badge.className = `tag ${state.smbData.running ? 'tag-ok' : ''}`;
 
     document.getElementById('smb-username').value = state.smbData.config.username || 'homeserver';
-    const ip = state.snapshot?.system?.ipAddress || window.location.hostname || '192.168.178.42';
+    const ip = state.snapshot?.system?.ipAddress || window.location.hostname || 'server';
 
     const tbody = document.getElementById('smb-shares-tbody');
     const shares = state.smbData.config.shares || [];
@@ -1285,9 +1245,8 @@
     state.filesPath = targetPath || '/';
     state.selectedFiles.clear();
     updateBulkBar();
-    const mode = state.mode || 'live';
     try {
-      const res = await fetch(`/api/files/list?mode=${encodeURIComponent(mode)}&path=${encodeURIComponent(state.filesPath)}`);
+      const res = await fetch(`/api/files/list?path=${encodeURIComponent(state.filesPath)}`);
       if (!res.ok) throw new Error('Ordner konnte nicht geladen werden');
       state.filesListing = await res.json();
       renderFilesView();
@@ -1350,7 +1309,6 @@
 
     const search = (document.getElementById('files-search').value || '').toLowerCase();
     const filtered = (listing.items || []).filter((i) => !search || i.name.toLowerCase().includes(search));
-    const mode = state.mode || 'live';
 
     // List View
     const listContainer = document.getElementById('files-list-container');
@@ -1372,7 +1330,7 @@
         const isText = item.kind === 'text';
         const isArchive = item.kind === 'archive' && (item.name.endsWith('.zip') || item.name.endsWith('.tar.gz') || item.name.endsWith('.tgz') || item.name.endsWith('.tar'));
         const modStr = item.modifiedAt ? new Date(item.modifiedAt).toLocaleString('de-DE') : '—';
-        const dlUrl = `/api/files/raw?mode=${encodeURIComponent(mode)}&path=${encodeURIComponent(item.path)}&download=1`;
+        const dlUrl = `/api/files/raw?path=${encodeURIComponent(item.path)}&download=1`;
         const checked = state.selectedFiles.has(item.path) ? 'checked' : '';
 
         const actionBtns = item.isDirectory
@@ -1414,7 +1372,7 @@
     // Grid View (with thumbnails for photos!)
     gridContainer.innerHTML = filtered
       .map((item) => {
-        const rawUrl = `/api/files/raw?mode=${encodeURIComponent(mode)}&path=${encodeURIComponent(item.path)}`;
+        const rawUrl = `/api/files/raw?path=${encodeURIComponent(item.path)}`;
         const thumb = item.isDirectory
           ? '📁'
           : item.kind === 'image'
@@ -1463,7 +1421,7 @@
       idx += 1;
       labelEl.textContent = `Lade hoch (${idx}/${files.length}): ${file.name}`;
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', `/api/files/upload?mode=${encodeURIComponent(state.mode || 'live')}&dir=${encodeURIComponent(state.filesPath)}&name=${encodeURIComponent(file.name)}`);
+      xhr.open('POST', `/api/files/upload?dir=${encodeURIComponent(state.filesPath)}&name=${encodeURIComponent(file.name)}`);
       xhr.upload.onprogress = (ev) => {
         if (ev.lengthComputable) {
           const pct = Math.round((ev.loaded / ev.total) * 100);
@@ -1479,8 +1437,7 @@
   }
 
   function openMediaPreview(filePath, kind, name) {
-    const mode = state.mode || 'live';
-    const rawUrl = `/api/files/raw?mode=${encodeURIComponent(mode)}&path=${encodeURIComponent(filePath)}`;
+    const rawUrl = `/api/files/raw?path=${encodeURIComponent(filePath)}`;
     document.getElementById('modal-preview-title').textContent = name || 'Dateivorschau';
     document.getElementById('modal-preview-path').textContent = filePath;
     document.getElementById('btn-preview-download').href = `${rawUrl}&download=1`;
@@ -1489,11 +1446,7 @@
     if (kind === 'image') {
       stage.innerHTML = `<img src="${escapeHtml(rawUrl)}" alt="${escapeHtml(name)}" />`;
     } else if (kind === 'video') {
-      if (mode === 'demo') {
-        stage.innerHTML = `<div style="text-align:center;padding:24px;"><p class="muted-text">Demo-Video-Stream für <strong>${escapeHtml(name)}</strong>.<br/>Auf deinem Linux-Server werden MP4/WebM/MOV-Videos hier per HTTP-Range-Stream abgespielt.</p></div>`;
-      } else {
-        stage.innerHTML = `<video src="${escapeHtml(rawUrl)}" controls autoplay></video>`;
-      }
+      stage.innerHTML = `<video src="${escapeHtml(rawUrl)}" controls autoplay></video>`;
     } else if (kind === 'audio') {
       stage.innerHTML = `<audio src="${escapeHtml(rawUrl)}" controls autoplay style="width:100%;max-width:480px;"></audio>`;
     } else {
@@ -1503,8 +1456,7 @@
   }
 
   async function openTextEditor(filePath) {
-    const mode = state.mode || 'live';
-    const res = await fetch(`/api/files/text?mode=${encodeURIComponent(mode)}&path=${encodeURIComponent(filePath)}`);
+    const res = await fetch(`/api/files/text?path=${encodeURIComponent(filePath)}`);
     const data = await res.json();
     if (!res.ok) return alert(data.error || 'Datei konnte nicht geöffnet werden');
     state.activeEditorPath = filePath;
@@ -1527,8 +1479,7 @@
   }
 
   async function loadDeployedStacks() {
-    const mode = state.mode || 'live';
-    const res = await fetch(`/api/compose/stacks?mode=${encodeURIComponent(mode)}`);
+    const res = await fetch(`/api/compose/stacks`);
     if (!res.ok) return;
     const data = await res.json();
     state.deployedStacks = data.stacks || [];
@@ -1736,7 +1687,7 @@
     openModal('modal-terminal');
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${window.location.host}/ws/terminal?mode=${encodeURIComponent(state.mode || 'live')}&container=${encodeURIComponent(containerId)}`);
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws/terminal?container=${encodeURIComponent(containerId)}`);
     state.termSocket = ws;
 
     ws.onopen = () => {
@@ -1751,7 +1702,7 @@
         screen.textContent = '';
         chunk = chunk.replace(/\x1b\[2J\x1b\[H/g, '');
       }
-      // Basic backspace handling for demo/tty echo
+      // Basic backspace handling for tty echo
       for (let i = 0; i < chunk.length; i += 1) {
         if (chunk.slice(i, i + 3) === '\b \b') {
           screen.textContent = screen.textContent.slice(0, -1);
@@ -1845,7 +1796,7 @@
     const btn = document.getElementById('btn-rescan-media');
     if (btn) btn.disabled = true;
     try {
-      const res = await fetch(`/api/media/scan?mode=${encodeURIComponent(state.mode || 'live')}`, { method: 'POST' });
+      const res = await fetch(`/api/media/scan`, { method: 'POST' });
       if (res.ok) handleSnapshot(await res.json());
     } finally {
       if (btn) btn.disabled = false;
@@ -1860,7 +1811,7 @@
     openModal('modal-logs');
 
     try {
-      const res = await fetch(`/api/docker/${encodeURIComponent(id)}/logs?mode=${encodeURIComponent(state.mode || 'live')}&tail=120`);
+      const res = await fetch(`/api/docker/${encodeURIComponent(id)}/logs?tail=120`);
       const payload = await res.json();
       const box = document.getElementById('logs-content');
       box.textContent = payload.logs || '(Keine Log-Ausgabe vorhanden)';
@@ -1904,7 +1855,7 @@
       btn.addEventListener('click', async () => {
         const action = btn.dataset.powerAction;
         if (!confirm(`Server wirklich ${action === 'reboot' ? 'neu starten' : 'herunterfahren'}?`)) return;
-        const res = await fetch(`/api/system/power?mode=${encodeURIComponent(state.mode || 'live')}`, {
+        const res = await fetch(`/api/system/power`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action })
@@ -1915,10 +1866,7 @@
       });
     });
 
-    // Mode & Live Toggle
-    document.getElementById('btn-mode-live').addEventListener('click', () => setMode('live'));
-    document.getElementById('btn-mode-demo').addEventListener('click', () => setMode('demo'));
-    document.getElementById('banner-switch-live').addEventListener('click', () => setMode('live'));
+    // Live Toggle
     document.getElementById('btn-pause').addEventListener('click', () => {
       state.paused = !state.paused;
       updateLiveIndicator();
@@ -1968,7 +1916,7 @@
     document.getElementById('btn-files-mkdir').addEventListener('click', async () => {
       const name = prompt('Name des neuen Ordners:');
       if (!name || !name.trim()) return;
-      await fetch(`/api/files/mkdir?mode=${encodeURIComponent(state.mode || 'live')}`, {
+      await fetch(`/api/files/mkdir`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ parentPath: state.filesPath, name: name.trim() })
@@ -2020,7 +1968,7 @@
       const action = document.getElementById('cm-action').value;
       const destDir = document.getElementById('cm-dest-input').value.trim();
       const sources = [...state.selectedFiles];
-      const res = await fetch(`/api/files/${action}?mode=${encodeURIComponent(state.mode || 'live')}`, {
+      const res = await fetch(`/api/files/${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sources, destDir })
@@ -2035,13 +1983,13 @@
 
     document.getElementById('btn-bulk-zip').addEventListener('click', () => {
       const qs = [...state.selectedFiles].map((p) => `path=${encodeURIComponent(p)}`).join('&');
-      window.location.href = `/api/files/zip?mode=${encodeURIComponent(state.mode || 'live')}&${qs}`;
+      window.location.href = `/api/files/zip?${qs}`;
     });
 
     document.getElementById('btn-bulk-delete').addEventListener('click', async () => {
       const paths = [...state.selectedFiles];
       if (!confirm(`${paths.length} ausgewählte Einträge wirklich unwiderruflich löschen?`)) return;
-      await fetch(`/api/files/delete?mode=${encodeURIComponent(state.mode || 'live')}`, {
+      await fetch(`/api/files/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paths })
@@ -2053,7 +2001,7 @@
     document.getElementById('btn-editor-save').addEventListener('click', async () => {
       if (!state.activeEditorPath) return;
       const content = document.getElementById('text-editor-area').value;
-      const res = await fetch(`/api/files/text?mode=${encodeURIComponent(state.mode || 'live')}`, {
+      const res = await fetch(`/api/files/text`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: state.activeEditorPath, content })
@@ -2124,7 +2072,7 @@
       btn.disabled = true;
       btn.textContent = 'Stelle Stack bereit…';
       try {
-        const res = await fetch(`/api/compose/deploy?mode=${encodeURIComponent(state.mode || 'live')}`, {
+        const res = await fetch(`/api/compose/deploy`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2136,7 +2084,7 @@
         if (!res.ok) throw new Error(data.error || 'Stack-Deployment fehlgeschlagen');
         closeModal('modal-compose');
         loadDeployedStacks();
-        const snapRes = await fetch(`/api/snapshot?mode=${encodeURIComponent(state.mode || 'live')}`);
+        const snapRes = await fetch(`/api/snapshot`);
         if (snapRes.ok) handleSnapshot(await snapRes.json());
       } catch (err) {
         errEl.textContent = err.message;
@@ -2289,8 +2237,8 @@
         };
 
         const endpoint = editCid
-          ? `/api/docker/${encodeURIComponent(editCid)}/recreate?mode=${encodeURIComponent(state.mode || 'live')}`
-          : `/api/appstore/install?mode=${encodeURIComponent(state.mode || 'live')}`;
+          ? `/api/docker/${encodeURIComponent(editCid)}/recreate`
+          : `/api/appstore/install`;
 
         const res = await fetch(endpoint, {
           method: 'POST',
@@ -2301,7 +2249,7 @@
         if (!res.ok) throw new Error(data.error || 'Vorgang fehlgeschlagen');
 
         closeModal('modal-install');
-        const snapRes = await fetch(`/api/snapshot?mode=${encodeURIComponent(state.mode || 'live')}`);
+        const snapRes = await fetch(`/api/snapshot`);
         if (snapRes.ok) handleSnapshot(await snapRes.json());
       } catch (err) {
         errEl.textContent = err.message;
@@ -2339,7 +2287,7 @@
       const devPath = document.getElementById('mount-dev-path').value;
       const mountPoint = document.getElementById('mount-target-path').value.trim();
       const persistFstab = document.getElementById('mount-persist-fstab').checked;
-      const res = await fetch(`/api/storage/mount?mode=${encodeURIComponent(state.mode || 'live')}`, {
+      const res = await fetch(`/api/storage/mount`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ devPath, mountPoint, persistFstab })
@@ -2351,7 +2299,7 @@
         return;
       }
       closeModal('modal-disk-mount');
-      const snapRes = await fetch(`/api/snapshot?mode=${encodeURIComponent(state.mode || 'live')}`);
+      const snapRes = await fetch(`/api/snapshot`);
       if (snapRes.ok) handleSnapshot(await snapRes.json());
     });
 
@@ -2373,7 +2321,7 @@
           const ro = document.querySelectorAll('.smb-ro-input')[idx].checked;
           if (name && pathVal) shares.push({ name, path: pathVal, readOnly: ro });
         });
-        const res = await fetch(`/api/smb/apply?mode=${encodeURIComponent(state.mode || 'live')}`, {
+        const res = await fetch(`/api/smb/apply`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2439,7 +2387,7 @@
 
       const extractBtn = e.target.closest('[data-extract-file]');
       if (extractBtn) {
-        const res = await fetch(`/api/files/extract?mode=${encodeURIComponent(state.mode || 'live')}`, {
+        const res = await fetch(`/api/files/extract`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: extractBtn.dataset.extractFile })
@@ -2454,7 +2402,7 @@
         const oldName = renameBtn.dataset.fileName;
         const newName = prompt('Neuer Name:', oldName);
         if (!newName || newName.trim() === oldName) return;
-        await fetch(`/api/files/rename?mode=${encodeURIComponent(state.mode || 'live')}`, {
+        await fetch(`/api/files/rename`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: renameBtn.dataset.renameFile, newName: newName.trim() })
@@ -2466,7 +2414,7 @@
       const delFileBtn = e.target.closest('[data-delete-file]');
       if (delFileBtn) {
         if (!confirm(`"${delFileBtn.dataset.fileName}" wirklich unwiderruflich löschen?`)) return;
-        await fetch(`/api/files/delete?mode=${encodeURIComponent(state.mode || 'live')}`, {
+        await fetch(`/api/files/delete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: delFileBtn.dataset.deleteFile })
@@ -2496,7 +2444,7 @@
         const dev = formatBtn.dataset.formatDev;
         const confirmDev = prompt(`ACHTUNG: Alle Daten auf ${dev} werden gelöscht!\nTippe "${dev}" zur Bestätigung ein:`);
         if (confirmDev !== dev) return;
-        const res = await fetch(`/api/storage/format?mode=${encodeURIComponent(state.mode || 'live')}`, {
+        const res = await fetch(`/api/storage/format`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ devPath: dev, fsType: 'ext4', label: 'homeserver' })
@@ -2511,7 +2459,7 @@
       if (unmountBtn) {
         const mp = unmountBtn.dataset.unmountDisk;
         if (!confirm(`Laufwerk "${mp}" wirklich aushängen?`)) return;
-        const res = await fetch(`/api/storage/unmount?mode=${encodeURIComponent(state.mode || 'live')}`, {
+        const res = await fetch(`/api/storage/unmount`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ mountPoint: mp })
@@ -2533,10 +2481,10 @@
         const action = portainerStackBtn.dataset.portainerStackAction;
         portainerStackBtn.disabled = true;
         try {
-          const res = await fetch(`/api/portainer/stacks/${encodeURIComponent(sid)}/${action}?mode=${encodeURIComponent(state.mode || 'live')}`, { method: 'POST' });
+          const res = await fetch(`/api/portainer/stacks/${encodeURIComponent(sid)}/${action}`, { method: 'POST' });
           if (!res.ok) alert((await res.json()).error);
           else {
-            const snapRes = await fetch(`/api/snapshot?mode=${encodeURIComponent(state.mode || 'live')}`);
+            const snapRes = await fetch(`/api/snapshot`);
             if (snapRes.ok) handleSnapshot(await snapRes.json());
           }
         } finally {
@@ -2570,7 +2518,7 @@
         if (action === 'delete' && !confirm(`Compose Stack "${stack}" stoppen und löschen?`)) return;
         stackActionBtn.disabled = true;
         try {
-          const res = await fetch(`/api/compose/${encodeURIComponent(stack)}/${action}?mode=${encodeURIComponent(state.mode || 'live')}`, { method: 'POST' });
+          const res = await fetch(`/api/compose/${encodeURIComponent(stack)}/${action}`, { method: 'POST' });
           if (!res.ok) alert((await res.json()).error);
           await loadDeployedStacks();
         } finally {
@@ -2606,7 +2554,7 @@
       const editContainerBtn = e.target.closest('[data-edit-container]');
       if (editContainerBtn) {
         const cid = editContainerBtn.dataset.editContainer;
-        const res = await fetch(`/api/docker/${encodeURIComponent(cid)}/inspect?mode=${encodeURIComponent(state.mode || 'live')}`);
+        const res = await fetch(`/api/docker/${encodeURIComponent(cid)}/inspect`);
         const cfg = await res.json();
         if (!res.ok) alert(cfg.error);
         else openInstallModal(null, cfg);
@@ -2621,11 +2569,11 @@
         updateContainerBtn.disabled = true;
         updateContainerBtn.textContent = 'Lädt…';
         try {
-          const res = await fetch(`/api/docker/${encodeURIComponent(cid)}/update?mode=${encodeURIComponent(state.mode || 'live')}`, { method: 'POST', body: '{}' });
+          const res = await fetch(`/api/docker/${encodeURIComponent(cid)}/update`, { method: 'POST', body: '{}' });
           const d = await res.json();
           if (!res.ok) alert(d.error);
           else {
-            const snapRes = await fetch(`/api/snapshot?mode=${encodeURIComponent(state.mode || 'live')}`);
+            const snapRes = await fetch(`/api/snapshot`);
             if (snapRes.ok) handleSnapshot(await snapRes.json());
           }
         } finally {
@@ -2642,8 +2590,8 @@
         if (action === 'remove' && !confirm(`Container "${dockerActionBtn.dataset.cname || cid}" wirklich löschen?`)) return;
         dockerActionBtn.disabled = true;
         try {
-          await fetch(`/api/docker/${encodeURIComponent(cid)}/${action}?mode=${encodeURIComponent(state.mode || 'live')}`, { method: 'POST' });
-          const snapRes = await fetch(`/api/snapshot?mode=${encodeURIComponent(state.mode || 'live')}`);
+          await fetch(`/api/docker/${encodeURIComponent(cid)}/${action}`, { method: 'POST' });
+          const snapRes = await fetch(`/api/snapshot`);
           if (snapRes.ok) handleSnapshot(await snapRes.json());
         } finally {
           dockerActionBtn.disabled = false;
@@ -2727,7 +2675,7 @@
       btn.disabled = true;
       msg.textContent = 'Prüfe Verbindung…';
       try {
-        const res = await fetch(`/api/portainer/test?mode=${encodeURIComponent(state.mode || 'live')}`, {
+        const res = await fetch(`/api/portainer/test`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2755,7 +2703,7 @@
       document.getElementById('input-portainer-token').value = '';
       const msg = document.getElementById('portainer-save-msg');
       msg.textContent = 'Portainer gespeichert!';
-      const snapRes = await fetch(`/api/snapshot?mode=${encodeURIComponent(state.mode || 'live')}`);
+      const snapRes = await fetch(`/api/snapshot`);
       if (snapRes.ok) handleSnapshot(await snapRes.json());
       setTimeout(() => { msg.textContent = ''; }, 3000);
     });
@@ -2809,10 +2757,7 @@
   async function init() {
     initTheme();
     bindEvents();
-    const savedMode = localStorage.getItem('hs_mode');
-    if (savedMode === 'live' || savedMode === 'demo') {
-      state.mode = savedMode;
-    }
+    localStorage.removeItem('hs_mode');
     const ok = await checkAuthAndStart();
     if (ok) connectStream();
   }

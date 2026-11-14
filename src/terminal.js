@@ -96,76 +96,6 @@ function parseWsFrames(buffer, onMessage, onClose) {
   return buffer.subarray(offset);
 }
 
-function attachDemoTerminal(wsSocket, containerName) {
-  let lineBuffer = '';
-  const prompt = `\r\nroot@${containerName || 'homeserver'}:/# `;
-  sendWsText(wsSocket, `Verbunden mit Demo-Terminal (${containerName || 'homeserver'})\r\nTippe 'help' für verfügbare Befehle.${prompt}`);
-
-  let leftover = Buffer.alloc(0);
-  wsSocket.on('data', (chunk) => {
-    leftover = parseWsFrames(
-      Buffer.concat([leftover, chunk]),
-      (msg) => {
-        if (msg.type === 'ping') {
-          sendWsFrame(wsSocket, msg.data, 0xA);
-          return;
-        }
-        for (const ch of msg.data) {
-          if (ch === '\r' || ch === '\n') {
-            const cmd = lineBuffer.trim();
-            lineBuffer = '';
-            sendWsText(wsSocket, '\r\n');
-            if (cmd === 'help') {
-              sendWsText(wsSocket, 'Verfügbar: ls, df -h, free -h, uname -a, whoami, docker ps, clear, exit');
-            } else if (cmd === 'ls') {
-              sendWsText(wsSocket, 'bin  config  data  dev  etc  mnt  proc  sys  usr  var');
-            } else if (cmd === 'df -h') {
-              sendWsText(
-                wsSocket,
-                'Filesystem      Size  Used Avail Use% Mounted on\r\n' +
-                '/dev/nvme0n1p2  1.0T  312G  688G  31% /\r\n' +
-                '/dev/sda1       8.0T  4.8T  3.2T  60% /mnt/fotos\r\n' +
-                '/dev/sdb1        12T  9.8T  2.2T  82% /mnt/filme\r\n' +
-                '/dev/sdc1       8.0T  5.2T  2.8T  65% /mnt/serien\r\n' +
-                '/dev/sdd1       4.0T  3.6T  400G  90% /mnt/backup'
-              );
-            } else if (cmd === 'free -h') {
-              sendWsText(wsSocket, '               total        used        free      shared  buff/cache   available\r\nMem:            31Gi        14Gi       7.5Gi       120Mi       9.4Gi        17Gi');
-            } else if (cmd === 'uname -a') {
-              sendWsText(wsSocket, 'Linux homeserver-nas 6.1.0-28-amd64 #1 SMP PREEMPT_DYNAMIC Debian x86_64 GNU/Linux');
-            } else if (cmd === 'whoami') {
-              sendWsText(wsSocket, 'root');
-            } else if (cmd === 'docker ps') {
-              sendWsText(wsSocket, 'immich-server (Up 19 days)  jellyfin (Up 38 days)  nextcloud (Up 38 days)');
-            } else if (cmd === 'clear') {
-              sendWsText(wsSocket, '\x1b[2J\x1b[H');
-            } else if (cmd === 'exit') {
-              sendWsText(wsSocket, 'Sitzung beendet.\r\n');
-              wsSocket.end();
-              return;
-            } else if (cmd.length > 0) {
-              sendWsText(wsSocket, `sh: ${cmd}: Demo-Shell (nur ausgewählte Befehle simuliert)`);
-            }
-            sendWsText(wsSocket, prompt);
-          } else if (ch === '\x7f' || ch === '\b') {
-            if (lineBuffer.length > 0) {
-              lineBuffer = lineBuffer.slice(0, -1);
-              sendWsText(wsSocket, '\b \b');
-            }
-          } else if (ch === '\x03') {
-            lineBuffer = '';
-            sendWsText(wsSocket, `^C${prompt}`);
-          } else {
-            lineBuffer += ch;
-            sendWsText(wsSocket, ch);
-          }
-        }
-      },
-      () => wsSocket.end()
-    );
-  });
-}
-
 async function attachDockerExecTerminal(wsSocket, containerId) {
   if (!ALLOW_CONTROL) {
     sendWsText(wsSocket, '\r\n[Fehler] Container-Terminal erfordert ALLOW_DOCKER_CONTROL=true.\r\n');
@@ -299,14 +229,8 @@ function attachTerminalUpgrade(server) {
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
     );
 
-    const mode = url.searchParams.get('mode') || 'live';
     const containerId = url.searchParams.get('container') || '';
-
-    if (mode === 'demo') {
-      attachDemoTerminal(socket, containerId);
-    } else {
-      attachDockerExecTerminal(socket, containerId);
-    }
+    attachDockerExecTerminal(socket, containerId);
   });
 }
 

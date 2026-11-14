@@ -33,7 +33,7 @@ function getComposeTemplates() {
   }
 }
 
-async function listStacks(isDemo = false) {
+async function listStacks() {
   ensureStacksDir();
   const dirs = await fsp.readdir(STACKS_DIR, { withFileTypes: true });
   const stacks = [];
@@ -49,7 +49,7 @@ async function listStacks(isDemo = false) {
         path: ymlPath,
         yaml,
         updatedAt: st.mtime.toISOString(),
-        mode: isDemo ? 'demo' : 'live'
+        mode: 'live'
       });
     }
   }
@@ -57,9 +57,9 @@ async function listStacks(isDemo = false) {
   return stacks.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function deployStack(stackName, yamlContent, isDemo = false) {
+async function deployStack(stackName, yamlContent) {
   const ALLOW_CONTROL = String(process.env.ALLOW_DOCKER_CONTROL || 'false').toLowerCase() === 'true';
-  if (!isDemo && !ALLOW_CONTROL) {
+  if (!ALLOW_CONTROL) {
     throw new Error('Container-Steuerung ist deaktiviert (ALLOW_DOCKER_CONTROL=true setzen).');
   }
 
@@ -73,14 +73,6 @@ async function deployStack(stackName, yamlContent, isDemo = false) {
   await fsp.mkdir(stackDir, { recursive: true });
   const ymlPath = path.join(stackDir, 'docker-compose.yml');
   await fsp.writeFile(ymlPath, yamlContent, 'utf8');
-
-  if (isDemo) {
-    return {
-      ok: true,
-      name: clean,
-      output: `[Demo] Stack "${clean}" gespeichert und simuliert gestartet.`
-    };
-  }
 
   try {
     const { stdout, stderr } = await execFileAsync(
@@ -98,9 +90,9 @@ async function deployStack(stackName, yamlContent, isDemo = false) {
   }
 }
 
-async function stopOrRemoveStack(stackName, action = 'down', isDemo = false) {
+async function stopOrRemoveStack(stackName, action = 'down') {
   const ALLOW_CONTROL = String(process.env.ALLOW_DOCKER_CONTROL || 'false').toLowerCase() === 'true';
-  if (!isDemo && !ALLOW_CONTROL) {
+  if (!ALLOW_CONTROL) {
     throw new Error('Container-Steuerung ist deaktiviert.');
   }
 
@@ -108,7 +100,7 @@ async function stopOrRemoveStack(stackName, action = 'down', isDemo = false) {
   const stackDir = path.join(STACKS_DIR, clean);
   const ymlPath = path.join(stackDir, 'docker-compose.yml');
 
-  if (!isDemo && fs.existsSync(ymlPath)) {
+  if (fs.existsSync(ymlPath)) {
     const cmdArgs =
       action === 'pull'
         ? ['compose', '-p', clean, '-f', ymlPath, 'pull']
@@ -129,7 +121,7 @@ async function stopOrRemoveStack(stackName, action = 'down', isDemo = false) {
   if (action === 'delete' && fs.existsSync(stackDir)) {
     await fsp.rm(stackDir, { recursive: true, force: true });
   }
-  return { ok: true, output: `[Demo] Aktion "${action}" für Stack "${clean}" ausgeführt.` };
+  return { ok: true, output: `Aktion "${action}" für Stack "${clean}" ausgeführt.` };
 }
 
 module.exports = {

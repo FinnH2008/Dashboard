@@ -11,8 +11,6 @@ services:
     environment:
       - PORT=3080
       - SERVER_NAME=Mein Homeserver
-      # 'auto' nutzt Live-Daten sobald Docker-Socket/Host-Mounts vorhanden sind (alternativ: 'live' oder 'demo')
-      - DEMO_MODE=auto
       # Optional: Kommagetrennte Liste eigener Medien-Ordner (leer = automatische Erkennung aller Laufwerke unter /mnt)
       - MEDIA_PATHS=
       # Optional: Zusätzliche Mountpoints außerhalb von /mnt (leer = automatische Erkennung)

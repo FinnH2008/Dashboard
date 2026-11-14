@@ -46,26 +46,8 @@ const {
   readLiveTextFile,
   writeLiveTextFile,
   streamZipDownload,
-  extractLiveArchive,
-  listDemoDirectory,
-  sendDemoPreview,
-  demoCreateFolder,
-  demoRenameItem,
-  demoCopyOrMove,
-  demoDeleteItems,
-  demoReadText,
-  demoWriteText
+  extractLiveArchive
 } = require('./collectors/files');
-const {
-  getDemoSnapshot,
-  getDemoLogs,
-  demoControlContainer,
-  demoRemoveContainer,
-  demoInstallContainer,
-  demoInspectContainer,
-  demoUpdateContainer,
-  demoMountDevice
-} = require('./collectors/demo');
 const {
   fetchPortainerStatus,
   testPortainerConnection,
@@ -89,19 +71,6 @@ const MIME_TYPES = {
   '.png': 'image/png',
   '.ico': 'image/x-icon'
 };
-
-function detectDefaultMode() {
-  const envMode = (process.env.DEMO_MODE || 'auto').toLowerCase();
-  if (envMode === 'true' || envMode === '1' || envMode === 'demo') return 'demo';
-  if (envMode === 'false' || envMode === '0' || envMode === 'live') return 'live';
-
-  const hasDockerSocket = fs.existsSync(process.env.DOCKER_SOCKET || '/var/run/docker.sock');
-  const hasHostProc = fs.existsSync('/host/proc');
-  const hasMediaPaths = Boolean(process.env.MEDIA_PATHS);
-  return hasDockerSocket || hasHostProc || hasMediaPaths ? 'live' : 'demo';
-}
-
-const DEFAULT_MODE = detectDefaultMode();
 
 function loadAppCatalog() {
   try {
@@ -149,22 +118,9 @@ async function readJsonBody(req, maxBytes = 1024 * 1024 * 2) {
   }
 }
 
-async function buildSnapshot(requestedMode, forceMediaScan = false) {
+async function buildSnapshot(forceMediaScan = false) {
   const config = loadConfig();
   const publicConfig = getPublicConfig();
-  const mode = requestedMode === 'live' || requestedMode === 'demo' ? requestedMode : DEFAULT_MODE;
-
-  if (mode === 'demo') {
-    const demo = getDemoSnapshot(config.diskLabels, config.serverName);
-    const portainer = await fetchPortainerStatus(config, demo.docker?.containers || [], true);
-    return {
-      ...demo,
-      portainer,
-      defaultMode: DEFAULT_MODE,
-      authEnabled: isAuthEnabled(),
-      config: publicConfig
-    };
-  }
 
   const [storage, media, docker] = await Promise.all([
     collectStorageMetrics(config.diskLabels),
@@ -174,12 +130,11 @@ async function buildSnapshot(requestedMode, forceMediaScan = false) {
 
   const [system, portainer] = await Promise.all([
     Promise.resolve(collectSystemMetrics(config.serverName)),
-    fetchPortainerStatus(config, docker.containers || [], false)
+    fetchPortainerStatus(config, docker.containers || [])
   ]);
 
   return {
     mode: 'live',
-    defaultMode: DEFAULT_MODE,
     authEnabled: isAuthEnabled(),
     system,
     storage,
@@ -236,12 +191,10 @@ try {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname;
-  const mode = url.searchParams.get('mode') || DEFAULT_MODE;
-  const isDemo = mode === 'demo';
 
   try {
     if ((req.method === 'GET' || req.method === 'HEAD') && pathname === '/api/health') {
-      return sendJson(res, 200, { status: 'ok', defaultMode: DEFAULT_MODE, uptime: process.uptime() });
+      return sendJson(res, 200, { status: 'ok', mode: 'live', uptime: process.uptime() });
     }
 
     if (req.method === 'GET' && pathname === '/api/auth/status') {
@@ -269,7 +222,7 @@ const server = http.createServer(async (req, res) => {
 
     // ==================== TELEMETRY & SNAPSHOT ====================
     if (req.method === 'GET' && pathname === '/api/snapshot') {
-      const snapshot = await buildSnapshot(mode, false);
+      const snapshot = await buildSnapshot(false);
       return sendJson(res, 200, snapshot);
     }
 
@@ -295,7 +248,7 @@ const server = http.createServer(async (req, res) => {
       const runTick = async () => {
         if (closed) return;
         try {
-          const snapshot = await buildSnapshot(mode, false);
+          const snapshot = await buildSnapshot(false);
           if (!closed) res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
         } catch (err) {
           if (!closed) res.write(`event: error\ndata: ${JSON.stringify({ message: err.message })}\n\n`);
@@ -319,12 +272,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && pathname === '/api/media/scan') {
-      return sendJson(res, 200, await buildSnapshot(mode, true));
+      return sendJson(res, 200, await buildSnapshot(true));
     }
 
     if (req.method === 'POST' && pathname === '/api/system/power') {
       const body = await readJsonBody(req);
-      if (isDemo) return sendJson(res, 200, { ok: true, action: body.action, simulated: true });
       return sendJson(res, 200, triggerHostPower(body.action));
     }
 
@@ -344,30 +296,25 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/files/list') {
       const targetPath = url.searchParams.get('path') || '/';
       const cfg = loadConfig();
-      const listing = isDemo
-        ? listDemoDirectory(targetPath)
-        : await listLiveDirectory(targetPath, cfg.mediaPaths);
+      const listing = await listLiveDirectory(targetPath, cfg.mediaPaths);
       return sendJson(res, 200, listing);
     }
 
     if (req.method === 'GET' && pathname === '/api/files/raw') {
       const targetPath = url.searchParams.get('path') || '';
       const download = url.searchParams.get('download') === '1';
-      if (isDemo) return sendDemoPreview(res, targetPath);
       const cfg = loadConfig();
       return await streamLiveFile(req, res, targetPath, cfg.mediaPaths, download);
     }
 
     if (req.method === 'GET' && pathname === '/api/files/text') {
       const targetPath = url.searchParams.get('path') || '';
-      if (isDemo) return sendJson(res, 200, demoReadText(targetPath));
       const cfg = loadConfig();
       return sendJson(res, 200, await readLiveTextFile(targetPath, cfg.mediaPaths));
     }
 
     if (req.method === 'POST' && pathname === '/api/files/text') {
       const body = await readJsonBody(req);
-      if (isDemo) return sendJson(res, 200, demoWriteText(body.path, body.content));
       const cfg = loadConfig();
       return sendJson(res, 200, await writeLiveTextFile(body.path, body.content, cfg.mediaPaths));
     }
@@ -375,15 +322,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/files/mkdir') {
       const body = await readJsonBody(req);
       const cfg = loadConfig();
-      const result = isDemo
-        ? demoCreateFolder(body.parentPath, body.name)
-        : await createLiveFolder(body.parentPath, body.name, cfg.mediaPaths);
+      const result = await createLiveFolder(body.parentPath, body.name, cfg.mediaPaths);
       return sendJson(res, 200, result);
     }
 
     if (req.method === 'POST' && pathname === '/api/files/rename') {
       const body = await readJsonBody(req);
-      if (isDemo) return sendJson(res, 200, demoRenameItem(body.path, body.newName));
       const cfg = loadConfig();
       return sendJson(res, 200, await renameLiveItem(body.path, body.newName, cfg.mediaPaths));
     }
@@ -391,7 +335,6 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && (pathname === '/api/files/copy' || pathname === '/api/files/move')) {
       const body = await readJsonBody(req);
       const move = pathname === '/api/files/move';
-      if (isDemo) return sendJson(res, 200, demoCopyOrMove(body.sources || [], body.destDir, move));
       const cfg = loadConfig();
       return sendJson(res, 200, await copyOrMoveLiveItems(body.sources || [], body.destDir, move, cfg.mediaPaths));
     }
@@ -400,22 +343,18 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const targets = body.paths || (body.path ? [body.path] : []);
       const cfg = loadConfig();
-      const result = isDemo
-        ? demoDeleteItems(targets)
-        : await deleteLiveItems(targets, cfg.mediaPaths);
+      const result = await deleteLiveItems(targets, cfg.mediaPaths);
       return sendJson(res, 200, result);
     }
 
     if (req.method === 'GET' && pathname === '/api/files/zip') {
       const paths = url.searchParams.getAll('path');
-      if (isDemo) return sendJson(res, 400, { error: 'ZIP-Export steht im Live-Server-Modus zur Verfügung.' });
       const cfg = loadConfig();
       return await streamZipDownload(paths, res, cfg.mediaPaths);
     }
 
     if (req.method === 'POST' && pathname === '/api/files/extract') {
       const body = await readJsonBody(req);
-      if (isDemo) return sendJson(res, 200, { ok: true });
       const cfg = loadConfig();
       return sendJson(res, 200, await extractLiveArchive(body.path, cfg.mediaPaths));
     }
@@ -424,7 +363,6 @@ const server = http.createServer(async (req, res) => {
       const dir = url.searchParams.get('dir') || '';
       const filename = url.searchParams.get('name') || 'upload.bin';
       const buffer = await readRawBody(req);
-      if (isDemo) return sendJson(res, 200, { ok: true, sizeBytes: buffer.length });
       const cfg = loadConfig();
       return sendJson(res, 200, await saveLiveUpload(dir, filename, buffer, cfg.mediaPaths));
     }
@@ -432,45 +370,31 @@ const server = http.createServer(async (req, res) => {
     // ==================== STORAGE ADMIN & SMB ====================
     if (req.method === 'POST' && pathname === '/api/storage/mount') {
       const body = await readJsonBody(req);
-      if (isDemo) return sendJson(res, 200, demoMountDevice(body.devPath, body.mountPoint));
       return sendJson(res, 200, await mountHostDevice(body.devPath, body.mountPoint, body.persistFstab !== false));
     }
 
     if (req.method === 'POST' && pathname === '/api/storage/unmount') {
       const body = await readJsonBody(req);
-      if (isDemo) return sendJson(res, 200, { ok: true });
       return sendJson(res, 200, await unmountHostPath(body.mountPoint));
     }
 
     if (req.method === 'POST' && pathname === '/api/storage/format') {
       const body = await readJsonBody(req);
-      if (isDemo) return sendJson(res, 200, { ok: true });
       return sendJson(res, 200, await formatHostDevice(body.devPath, body.fsType, body.label));
     }
 
     if (req.method === 'GET' && pathname === '/api/smb/status') {
-      return sendJson(res, 200, await getSmbStatus(isDemo));
+      return sendJson(res, 200, await getSmbStatus());
     }
 
     if (req.method === 'POST' && pathname === '/api/smb/apply') {
       const body = await readJsonBody(req);
-      return sendJson(res, 200, await applySmbShares(body, isDemo));
+      return sendJson(res, 200, await applySmbShares(body));
     }
 
-    // ==================== APP STORE & COMPOSE STACKS ====================
     // ==================== PORTAINER BRIDGE & COMPOSE STACKS ====================
     if (req.method === 'POST' && pathname === '/api/portainer/test') {
       const body = await readJsonBody(req);
-      if (isDemo) {
-        return sendJson(res, 200, {
-          ok: true,
-          url: body.url || 'https://192.168.178.42:9443',
-          endpointId: 1,
-          endpointName: 'local',
-          stackCount: 3,
-          simulated: true
-        });
-      }
       const cfg = loadConfig();
       const result = await testPortainerConnection({
         url: body.url || cfg.portainerUrl,
@@ -485,7 +409,7 @@ const server = http.createServer(async (req, res) => {
       const stackId = decodeURIComponent(portainerStackMatch[1]);
       const action = portainerStackMatch[2];
       const cfg = loadConfig();
-      return sendJson(res, 200, await controlPortainerStack(stackId, action, cfg, isDemo));
+      return sendJson(res, 200, await controlPortainerStack(stackId, action, cfg));
     }
 
     if (req.method === 'GET' && pathname === '/api/appstore/catalog') {
@@ -493,30 +417,28 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && pathname === '/api/compose/stacks') {
-      return sendJson(res, 200, { stacks: await listStacks(isDemo) });
+      return sendJson(res, 200, { stacks: await listStacks() });
     }
 
     if (req.method === 'POST' && pathname === '/api/compose/deploy') {
       const body = await readJsonBody(req);
       const cfg = loadConfig();
       if (body.target !== 'local' && ((cfg.portainerUrl && cfg.portainerApiKey) || body.target === 'portainer')) {
-        return sendJson(res, 200, await deployStackViaPortainer(body.name, body.yaml, cfg, isDemo));
+        return sendJson(res, 200, await deployStackViaPortainer(body.name, body.yaml, cfg));
       }
-      return sendJson(res, 200, await deployStack(body.name, body.yaml, isDemo));
+      return sendJson(res, 200, await deployStack(body.name, body.yaml));
     }
 
     const composeActionMatch = pathname.match(/^\/api\/compose\/([^/]+)\/(up|down|pull|delete)$/);
     if (req.method === 'POST' && composeActionMatch) {
       const stackName = decodeURIComponent(composeActionMatch[1]);
       const action = composeActionMatch[2];
-      return sendJson(res, 200, await stopOrRemoveStack(stackName, action, isDemo));
+      return sendJson(res, 200, await stopOrRemoveStack(stackName, action));
     }
 
     if (req.method === 'POST' && pathname === '/api/appstore/install') {
       const body = await readJsonBody(req);
-      const result = isDemo
-        ? demoInstallContainer(body)
-        : await createAndStartContainer(body);
+      const result = await createAndStartContainer(body);
 
       const firstPort = body.hostPort || body.ports?.[0]?.hostPort;
       if (body.addBookmark !== false && firstPort) {
@@ -543,7 +465,7 @@ const server = http.createServer(async (req, res) => {
     const inspectMatch = pathname.match(/^\/api\/docker\/([^/]+)\/inspect$/);
     if (req.method === 'GET' && inspectMatch) {
       const containerId = decodeURIComponent(inspectMatch[1]);
-      const info = isDemo ? demoInspectContainer(containerId) : await inspectContainerConfig(containerId);
+      const info = await inspectContainerConfig(containerId);
       return sendJson(res, 200, info);
     }
 
@@ -552,9 +474,7 @@ const server = http.createServer(async (req, res) => {
       const containerId = decodeURIComponent(updateMatch[1]);
       const body = await readJsonBody(req);
       const override = updateMatch[2] === 'recreate' ? body : null;
-      const result = isDemo
-        ? demoUpdateContainer(containerId, override)
-        : await recreateOrUpdateContainer(containerId, override);
+      const result = await recreateOrUpdateContainer(containerId, override);
       return sendJson(res, 200, result);
     }
 
@@ -562,7 +482,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && logsMatch) {
       const containerId = decodeURIComponent(logsMatch[1]);
       const tail = Math.min(500, Math.max(20, Number(url.searchParams.get('tail')) || 120));
-      const logs = isDemo ? getDemoLogs(containerId) : await getContainerLogs(containerId, tail);
+      const logs = await getContainerLogs(containerId, tail);
       return sendJson(res, 200, { id: containerId, logs });
     }
 
@@ -572,11 +492,11 @@ const server = http.createServer(async (req, res) => {
       const action = actionMatch[2];
 
       if (action === 'remove') {
-        const result = isDemo ? demoRemoveContainer(containerId) : await removeContainer(containerId, true);
+        const result = await removeContainer(containerId, true);
         return sendJson(res, 200, result);
       }
 
-      const result = isDemo ? demoControlContainer(containerId, action) : await controlContainer(containerId, action);
+      const result = await controlContainer(containerId, action);
       return sendJson(res, 200, result);
     }
 
@@ -593,5 +513,5 @@ const server = http.createServer(async (req, res) => {
 attachTerminalUpgrade(server);
 
 server.listen(PORT, HOST, () => {
-  console.log(`Homeserver Dashboard läuft auf http://${HOST}:${PORT} (Standard-Modus: ${DEFAULT_MODE})`);
+  console.log(`Homeserver Dashboard läuft auf http://${HOST}:${PORT}`);
 });

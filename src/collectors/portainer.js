@@ -123,48 +123,9 @@ async function resolveEndpoint(baseUrl, apiKey, preferredId = null) {
   };
 }
 
-function getDemoPortainerStatus(containers = []) {
-  const stackMap = new Map();
-  (containers || []).forEach((c) => {
-    if (!c.stackName) return;
-    const item = stackMap.get(c.stackName) || { total: 0, running: 0 };
-    item.total += 1;
-    if (c.state === 'running') item.running += 1;
-    stackMap.set(c.stackName, item);
-  });
-
-  const baseUrl = 'https://192.168.178.42:9443';
-  const stacks = [...stackMap.entries()].map(([name, counts], idx) => ({
-    id: idx + 1,
-    name,
-    type: 'Compose',
-    status: counts.running > 0 ? 1 : 2,
-    statusLabel: counts.running > 0 ? 'Aktiv' : 'Inaktiv',
-    endpointId: 1,
-    containerCount: counts.total,
-    runningCount: counts.running,
-    deepLink: `${baseUrl}/#!/1/docker/stacks/${encodeURIComponent(name)}?id=${idx + 1}&type=2&regular=true`
-  }));
-
-  return {
-    configured: true,
-    connected: true,
-    url: baseUrl,
-    detectedUrl: baseUrl,
-    endpointId: 1,
-    endpointName: 'local',
-    error: null,
-    stacks
-  };
-}
-
 let portainerRefreshInFlight = false;
 
-async function fetchPortainerStatus(config, containers = [], isDemo = false) {
-  if (isDemo) {
-    return getDemoPortainerStatus(containers);
-  }
-
+async function fetchPortainerStatus(config, containers = []) {
   const detectedUrl = detectPortainerUrlFromContainers(containers);
   const baseUrl = normalizeUrl(config?.portainerUrl) || detectedUrl;
   const apiKey = config?.portainerApiKey || '';
@@ -268,7 +229,7 @@ async function fetchPortainerStatus(config, containers = [], isDemo = false) {
 
 async function testPortainerConnection({ url, apiKey, endpointId }) {
   const cleanUrl = normalizeUrl(url);
-  if (!cleanUrl) throw new Error('Bitte Portainer-URL angeben (z. B. https://192.168.178.42:9443).');
+  if (!cleanUrl) throw new Error('Bitte Portainer-URL angeben (z. B. https://<server-ip>:9443).');
   if (!apiKey) throw new Error('Bitte Portainer API-Token angeben (Portainer → My account → Access tokens).');
 
   const ep = await resolveEndpoint(cleanUrl, apiKey, endpointId);
@@ -283,22 +244,13 @@ async function testPortainerConnection({ url, apiKey, endpointId }) {
   };
 }
 
-async function deployStackViaPortainer(stackName, yamlContent, config, isDemo = false) {
+async function deployStackViaPortainer(stackName, yamlContent, config) {
   const cleanName = String(stackName || '')
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, '-');
   if (!cleanName) throw new Error('Ungültiger Stack-Name.');
   if (!yamlContent || !String(yamlContent).trim()) throw new Error('Compose-YAML darf nicht leer sein.');
-
-  if (isDemo) {
-    return {
-      ok: true,
-      via: 'portainer',
-      name: cleanName,
-      simulated: true
-    };
-  }
 
   const baseUrl = normalizeUrl(config?.portainerUrl);
   const apiKey = config?.portainerApiKey || '';
@@ -353,12 +305,9 @@ async function deployStackViaPortainer(stackName, yamlContent, config, isDemo = 
   };
 }
 
-async function controlPortainerStack(stackId, action, config, isDemo = false) {
+async function controlPortainerStack(stackId, action, config) {
   if (!['start', 'stop', 'delete'].includes(action)) {
     throw new Error('Ungültige Stack-Aktion.');
-  }
-  if (isDemo) {
-    return { ok: true, id: stackId, action, simulated: true };
   }
 
   const baseUrl = normalizeUrl(config?.portainerUrl);

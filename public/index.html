@@ -52,7 +52,7 @@
           <div class="brand-title-row">
             <h1 id="server-title">Heimserver NAS</h1>
           </div>
-          <div class="host-pill mono" id="host-ip">192.168.178.42</div>
+          <div class="host-pill mono" id="host-ip">—</div>
         </div>
       </div>
 
@@ -88,13 +88,6 @@
 
       <div class="sidebar-footer">
         <div class="sidebar-host-spec mono" id="host-subtitle">Debian GNU/Linux · Laufzeit —</div>
-        <div class="sidebar-mode-row">
-          <span class="sidebar-mode-label">Datenquelle</span>
-          <div class="mode-switch" role="group" aria-label="Datenquelle">
-            <button class="mode-btn" id="btn-mode-live" data-mode="live">Live</button>
-            <button class="mode-btn" id="btn-mode-demo" data-mode="demo">Demo</button>
-          </div>
-        </div>
       </div>
     </aside>
 
@@ -105,10 +98,6 @@
         <div class="topbar-inner">
           <div class="topbar-left">
             <span class="topbar-crumb" id="active-view-title">Systemübersicht</span>
-            <span class="demo-chip hidden" id="demo-banner">
-              Demo-Modus (33 TB simuliert)
-              <button class="demo-chip-btn" id="banner-switch-live">Zu Live</button>
-            </span>
           </div>
 
           <div class="topbar-controls">
@@ -597,7 +586,7 @@
             <form id="form-portainer-settings" class="settings-form">
               <div class="form-group">
                 <label for="input-portainer-url">Portainer-URL</label>
-                <input type="url" id="input-portainer-url" class="input-full mono" placeholder="https://192.168.178.42:9443" />
+                <input type="url" id="input-portainer-url" class="input-full mono" placeholder="https://<server-ip>:9443" />
               </div>
               <div class="form-group">
                 <label for="input-portainer-token">Portainer API-Token (Portainer → My account → Access tokens)</label>

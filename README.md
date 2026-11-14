@@ -46,7 +46,6 @@ services:
     environment:
       - PORT=3080
       - SERVER_NAME=Mein Homeserver
-      - DEMO_MODE=auto
       - MEDIA_PATHS=
       - DISK_MOUNTS=
       - ALLOW_DOCKER_CONTROL=true
@@ -55,7 +54,7 @@ services:
       - ALLOW_HOST_POWER=false
       - DASHBOARD_PASSWORD=
       # Optional: Direktverbindung zu Portainer (alternativ unter Einstellungen im Browser eintragen)
-      - PORTAINER_URL=https://192.168.178.42:9443
+      - PORTAINER_URL=https://<DEINE-SERVER-IP>:9443
       - PORTAINER_API_KEY=
     volumes:
       - /opt/stacks/homeserver-dashboard/data:/app/data
@@ -96,10 +95,9 @@ Alle deine bestehenden CasaOS-Apps laufen bereits als normale Docker-Container. 
 | Variable | Standard | Beschreibung |
 | :--- | :--- | :--- |
 | `PORT` | `3080` | Web-Port des Dashboards |
-| `DEMO_MODE` | `auto` | `auto`, `live` oder `demo` |
-| `MEDIA_PATHS` | `/mnt/fotos,...` | Kommagetrennte Pfade für Mediathek & Dateimanager |
-| `DISK_MOUNTS` | `/mnt/fotos,...` | Explizite Mountpoints, die immer als Festplatten erscheinen |
-| `PORTAINER_URL` | *(leer)* | Optional: Portainer-URL (z. B. `https://192.168.178.42:9443`) |
+| `MEDIA_PATHS` | *(auto `/mnt/*`)* | Kommagetrennte Pfade für Mediathek & Dateimanager |
+| `DISK_MOUNTS` | *(auto)* | Explizite Mountpoints, die immer als Festplatten erscheinen |
+| `PORTAINER_URL` | *(leer)* | Optional: Portainer-URL (z. B. `https://<DEINE-SERVER-IP>:9443`) |
 | `PORTAINER_API_KEY` | *(leer)* | Optional: Portainer Access Token (`ptr_...`) für direkte Stack-API |
 | `ALLOW_DOCKER_CONTROL` | `true` | Container steuern, bearbeiten, updaten, Compose Stacks & Terminal |
 | `ALLOW_FILE_WRITE` | `true` | Uploads, Text-Editor, Kopieren, Verschieben, Umbenennen & Löschen |
