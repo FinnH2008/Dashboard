@@ -1,0 +1,18 @@
+{
+  "name": "Heimserver OS Dashboard",
+  "short_name": "Homeserver",
+  "description": "Linux Homeserver Dashboard für Medien, Festplatten, Docker, SMB & Host-Monitoring",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#141518",
+  "theme_color": "#0a84ff",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

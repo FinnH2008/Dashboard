@@ -5,6 +5,13 @@ const path = require('node:path');
 const COOKIE_NAME = 'hs_session';
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const SECRET_FILE = path.join(DATA_DIR, '.session-secret');
+const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
+
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+}
 
 function loadOrCreateSecret() {
   if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
@@ -13,7 +20,7 @@ function loadOrCreateSecret() {
       const existing = fs.readFileSync(SECRET_FILE, 'utf8').trim();
       if (existing.length >= 32) return existing;
     }
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    ensureDataDir();
     const generated = crypto.randomBytes(32).toString('hex');
     fs.writeFileSync(SECRET_FILE, generated, { mode: 0o600 });
     return generated;
@@ -66,12 +73,110 @@ function clearLoginFailures(req) {
   loginAttempts.delete(getClientKey(req));
 }
 
-function getConfiguredPassword() {
+function getEnvPassword() {
   return (process.env.DASHBOARD_PASSWORD || '').trim();
 }
 
+function readAuthFile() {
+  try {
+    if (!fs.existsSync(AUTH_FILE)) return null;
+    const parsed = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAuthFile(obj) {
+  ensureDataDir();
+  fs.writeFileSync(AUTH_FILE, JSON.stringify(obj, null, 2), { mode: 0o600, encoding: 'utf8' });
+}
+
 function isAuthEnabled() {
-  return getConfiguredPassword().length > 0;
+  const fileCfg = readAuthFile();
+  if (fileCfg?.passwordHash?.salt && fileCfg?.passwordHash?.hash) {
+    return true;
+  }
+  if (fileCfg?.disabled === true && !getEnvPassword()) {
+    return false;
+  }
+  return getEnvPassword().length > 0;
+}
+
+function getAuthMeta() {
+  const fileCfg = readAuthFile();
+  if (fileCfg?.passwordHash?.salt && fileCfg?.passwordHash?.hash) {
+    return {
+      authEnabled: true,
+      mode: 'ui',
+      envOverrideActive: Boolean(getEnvPassword()),
+      updatedAt: fileCfg.updatedAt || null
+    };
+  }
+  if (getEnvPassword()) {
+    return {
+      authEnabled: true,
+      mode: 'env',
+      envOverrideActive: true,
+      updatedAt: null
+    };
+  }
+  return {
+    authEnabled: false,
+    mode: 'none',
+    envOverrideActive: false,
+    updatedAt: fileCfg?.updatedAt || null
+  };
+}
+
+function hashPasswordScrypt(plainPassword) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(plainPassword), salt, 64).toString('hex');
+  return { salt, hash };
+}
+
+function verifyScryptHash(candidate, stored) {
+  if (!stored?.salt || !stored?.hash) return false;
+  try {
+    const derived = crypto.scryptSync(String(candidate || ''), stored.salt, 64);
+    const expected = Buffer.from(stored.hash, 'hex');
+    if (derived.length !== expected.length) return false;
+    return crypto.timingSafeEqual(derived, expected);
+  } catch {
+    return false;
+  }
+}
+
+function setDashboardPassword(currentPassword, newPassword) {
+  if (isAuthEnabled() && !verifyPassword(currentPassword)) {
+    const err = new Error('Aktuelles Passwort ist falsch.');
+    err.statusCode = 401;
+    throw err;
+  }
+
+  const next = String(newPassword ?? '');
+  if (!next.trim()) {
+    if (getEnvPassword()) {
+      // Remove UI override so env DASHBOARD_PASSWORD acts as fallback again
+      if (fs.existsSync(AUTH_FILE)) fs.unlinkSync(AUTH_FILE);
+      return { ok: true, ...getAuthMeta(), message: 'UI-Passwort entfernt — DASHBOARD_PASSWORD aus Umgebungsvariable aktiv.' };
+    }
+    writeAuthFile({ disabled: true, updatedAt: new Date().toISOString() });
+    return { ok: true, ...getAuthMeta(), message: 'Passwortschutz deaktiviert.' };
+  }
+
+  if (next.length < 4) {
+    const err = new Error('Neues Passwort muss mindestens 4 Zeichen lang sein.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  writeAuthFile({
+    passwordHash: hashPasswordScrypt(next),
+    updatedAt: new Date().toISOString()
+  });
+
+  return { ok: true, ...getAuthMeta(), message: 'Dashboard-Passwort erfolgreich gespeichert.' };
 }
 
 function parseCookies(req) {
@@ -116,7 +221,11 @@ function verifyToken(token) {
 }
 
 function verifyPassword(candidate) {
-  const configured = getConfiguredPassword();
+  const fileCfg = readAuthFile();
+  if (fileCfg?.passwordHash?.salt && fileCfg?.passwordHash?.hash) {
+    return verifyScryptHash(candidate, fileCfg.passwordHash);
+  }
+  const configured = getEnvPassword();
   if (!configured) return true;
   // Compare SHA-256 digests so timingSafeEqual works cleanly regardless of length
   const a = crypto.createHash('sha256').update(String(candidate || ''), 'utf8').digest();
@@ -146,9 +255,14 @@ module.exports = {
   isAuthEnabled,
   isAuthenticated,
   verifyPassword,
+  getAuthMeta,
+  setDashboardPassword,
   createSessionCookie,
   clearSessionCookie,
   checkLoginRateLimit,
   recordLoginFailure,
-  clearLoginFailures
+  clearLoginFailures,
+  parseCookies,
+  signToken,
+  verifyToken
 };

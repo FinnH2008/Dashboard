@@ -7,11 +7,16 @@ const {
   isAuthEnabled,
   isAuthenticated,
   verifyPassword,
+  getAuthMeta,
+  setDashboardPassword,
   createSessionCookie,
   clearSessionCookie,
   checkLoginRateLimit,
   recordLoginFailure,
-  clearLoginFailures
+  clearLoginFailures,
+  parseCookies,
+  signToken,
+  verifyToken
 } = require('./auth');
 const { attachTerminalUpgrade } = require('./terminal');
 const { collectSystemMetrics, triggerHostPower } = require('./collectors/system');
@@ -29,7 +34,10 @@ const {
   removeContainer,
   createAndStartContainer,
   inspectContainerConfig,
-  recreateOrUpdateContainer
+  recreateOrUpdateContainer,
+  checkContainerUpdates,
+  getDockerDiskUsage,
+  pruneDockerResources
 } = require('./collectors/docker');
 const {
   getComposeTemplates,
@@ -42,6 +50,10 @@ const {
   listLiveDirectory,
   listDirectoriesOnly,
   streamLiveFile,
+  streamVideoTranscode,
+  streamThumbnail,
+  searchLiveFiles,
+  cleanupExpiredTrash,
   createLiveFolder,
   renameLiveItem,
   copyOrMoveLiveItems,
@@ -78,7 +90,23 @@ const {
   sendMagicPacket,
   wakeDeviceById
 } = require('./collectors/wol');
+const {
+  getPublicNotificationState,
+  saveNotificationConfig,
+  sendTestNotification,
+  evaluateSystemNotifications
+} = require('./collectors/notifications');
+const { collectHostAndNetworkStatus, savePingTargets } = require('./collectors/host');
 const { loadConfig, getPublicConfig, saveConfig } = require('./store/services');
+const { logAuditEvent, listAuditEvents } = require('./store/audit');
+const {
+  listShares,
+  createShare,
+  revokeShare,
+  getShareByToken,
+  verifySharePassword,
+  recordShareDownload
+} = require('./store/shares');
 
 const PORT = Number(process.env.PORT) || 3080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -90,6 +118,7 @@ const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon'
@@ -196,6 +225,84 @@ async function buildSnapshot(forceMediaScan = false) {
   };
 }
 
+function escapeShareHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatShareSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let idx = 0;
+  let val = bytes;
+  while (val >= 1000 && idx < units.length - 1) {
+    val /= 1000;
+    idx += 1;
+  }
+  return `${val >= 100 ? val.toFixed(0) : val >= 10 ? val.toFixed(1) : val.toFixed(2)} ${units[idx]}`;
+}
+
+function isShareCookieValid(req, share) {
+  if (!share?.passwordHash?.salt || !share?.passwordHash?.hash) return true;
+  const cookies = parseCookies(req);
+  const rawToken = cookies[`hs_share_${share.token}`];
+  if (!rawToken) return false;
+  const decoded = verifyToken(rawToken);
+  return Boolean(decoded && decoded.token === share.token);
+}
+
+function renderPublicSharePage(share, unlocked, errorMsg = '') {
+  const safeName = escapeShareHtml(share.name || 'Download');
+  const metaText = share.isDirectory ? 'Ordner (als ZIP-Archiv)' : `Datei · ${formatShareSize(share.sizeBytes)}`;
+  const expText = share.expiresAt
+    ? `Gültig bis ${escapeShareHtml(new Date(share.expiresAt).toLocaleString('de-DE'))}`
+    : 'Unbegrenzt gültig';
+
+  const bodyHtml = unlocked
+    ? `
+      <p class="meta">${escapeShareHtml(metaText)} · ${expText}</p>
+      <a class="btn" href="/s/${encodeURIComponent(share.token)}?download=1">${share.isDirectory ? 'Als ZIP herunterladen' : 'Datei herunterladen'}</a>
+    `
+    : `
+      <p class="meta">Diese Freigabe ist passwortgeschützt · ${expText}</p>
+      ${errorMsg ? `<p class="err">${escapeShareHtml(errorMsg)}</p>` : ''}
+      <form method="POST" action="/s/${encodeURIComponent(share.token)}">
+        <input type="password" name="password" placeholder="Freigabe-Passwort eingeben…" autofocus required />
+        <button class="btn" type="submit">Freigabe entsperren</button>
+      </form>
+    `;
+
+  return `<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${safeName} · Homeserver Freigabe</title>
+  <style>
+    body { margin:0; min-height:100vh; display:grid; place-items:center; background:#141518; color:#f4f4f5; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; padding:20px; }
+    .card { width:100%; max-width:420px; background:#1b1d21; border:1px solid rgba(255,255,255,0.12); border-radius:14px; padding:24px; box-sizing:border-box; display:flex; flex-direction:column; gap:14px; }
+    h1 { margin:0; font-size:18px; word-break:break-word; }
+    .meta { margin:0; font-size:13px; color:#a1a1aa; }
+    .err { margin:0; font-size:13px; color:#ff6961; }
+    form { display:flex; flex-direction:column; gap:10px; }
+    input { padding:10px 12px; border-radius:8px; border:1px solid rgba(255,255,255,0.16); background:#111215; color:#fff; font-size:14px; }
+    .btn { display:inline-block; text-align:center; padding:10px 16px; border-radius:8px; background:#0a84ff; color:#fff; font-weight:600; font-size:14px; text-decoration:none; border:none; cursor:pointer; }
+    .btn:hover { filter:brightness(1.08); }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>${share.isDirectory ? '📁' : '📄'} ${safeName}</h1>
+    ${bodyHtml}
+  </main>
+</body>
+</html>`;
+}
+
 function safeDecodeParam(value) {
   try {
     return decodeURIComponent(value);
@@ -275,9 +382,11 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       if (!verifyPassword(body.password)) {
         recordLoginFailure(req);
+        logAuditEvent(req, 'auth.fail', 'Fehlgeschlagener Anmeldeversuch (falsches Passwort).', 'warn');
         return sendJson(res, 401, { error: 'Falsches Passwort' });
       }
       clearLoginFailures(req);
+      logAuditEvent(req, 'auth.login', 'Erfolgreich am Dashboard angemeldet.', 'ok');
       return sendJson(res, 200, { ok: true }, { 'Set-Cookie': createSessionCookie() });
     }
 
@@ -285,8 +394,125 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true }, { 'Set-Cookie': clearSessionCookie() });
     }
 
+    // ==================== PUBLIC SHARE LINKS (/s/:token) ====================
+    const shareMatch = pathname.match(/^\/s\/([a-zA-Z0-9_-]+)$/);
+    if (shareMatch) {
+      const token = shareMatch[1];
+      const share = getShareByToken(token);
+      if (!share) {
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+        res.end('<h1>Freigabe nicht gefunden oder abgelaufen</h1>');
+        return;
+      }
+
+      if (req.method === 'POST') {
+        checkLoginRateLimit(req);
+        const raw = (await readRawBody(req, 32 * 1024)).toString('utf8');
+        let submittedPw = '';
+        if (String(req.headers['content-type'] || '').includes('application/json')) {
+          try {
+            submittedPw = JSON.parse(raw || '{}').password || '';
+          } catch {
+            submittedPw = '';
+          }
+        } else {
+          const params = new URLSearchParams(raw);
+          submittedPw = params.get('password') || '';
+        }
+
+        if (!verifySharePassword(share, submittedPw)) {
+          recordLoginFailure(req);
+          res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+          res.end(renderPublicSharePage(share, false, 'Falsches Freigabe-Passwort.'));
+          return;
+        }
+        clearLoginFailures(req);
+        const unlockToken = signToken({ token: share.token, exp: Date.now() + 24 * 3600 * 1000 });
+        const cookieHeader = `hs_share_${share.token}=${encodeURIComponent(unlockToken)}; Path=/s/${share.token}; HttpOnly; SameSite=Lax; Max-Age=86400`;
+        res.writeHead(303, {
+          Location: `/s/${share.token}`,
+          'Set-Cookie': cookieHeader,
+          ...SECURITY_HEADERS
+        });
+        res.end();
+        return;
+      }
+
+      if (req.method === 'GET') {
+        const unlocked = isShareCookieValid(req, share);
+        if (url.searchParams.get('download') === '1') {
+          if (!unlocked) {
+            res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+            res.end(renderPublicSharePage(share, false, 'Bitte zuerst das Freigabe-Passwort eingeben.'));
+            return;
+          }
+          const cfg = loadConfig();
+          recordShareDownload(share.token);
+          if (share.isDirectory) {
+            return await streamZipDownload([share.targetPath], res, cfg.mediaPaths);
+          }
+          return await streamLiveFile(req, res, share.targetPath, cfg.mediaPaths, { forceDownload: true });
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+        res.end(renderPublicSharePage(share, unlocked));
+        return;
+      }
+
+      return sendJson(res, 405, { error: 'Method not allowed' });
+    }
+
     if (pathname.startsWith('/api/') && !isAuthenticated(req)) {
       return sendJson(res, 401, { error: 'Nicht angemeldet', authRequired: true });
+    }
+
+    // ==================== AUTH MANAGEMENT & SECURITY AUDIT ====================
+    if (req.method === 'GET' && pathname === '/api/auth/meta') {
+      return sendJson(res, 200, getAuthMeta());
+    }
+
+    if (req.method === 'POST' && pathname === '/api/auth/password') {
+      const body = await readJsonBody(req);
+      const result = setDashboardPassword(body.currentPassword, body.newPassword);
+      logAuditEvent(req, 'auth.password', result.message || 'Dashboard-Passwort geändert.', 'ok');
+      return sendJson(res, 200, result, { 'Set-Cookie': createSessionCookie() });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/audit') {
+      const limit = Math.min(200, Math.max(10, Number(url.searchParams.get('limit')) || 100));
+      return sendJson(res, 200, { events: listAuditEvents(limit) });
+    }
+
+    // ==================== PUSH NOTIFICATIONS ====================
+    if (req.method === 'GET' && pathname === '/api/notifications/state') {
+      return sendJson(res, 200, getPublicNotificationState());
+    }
+
+    if (req.method === 'POST' && pathname === '/api/notifications/config') {
+      const body = await readJsonBody(req);
+      const updated = saveNotificationConfig(body);
+      logAuditEvent(req, 'notifications.config', `Push-Benachrichtigungen ${updated.enabled ? 'aktiviert' : 'deaktiviert'}.`, 'info');
+      return sendJson(res, 200, updated);
+    }
+
+    if (req.method === 'POST' && pathname === '/api/notifications/test') {
+      const result = await sendTestNotification();
+      logAuditEvent(req, 'notifications.test', 'Test-Push-Benachrichtigung ausgelöst.', result.ok ? 'ok' : 'warn');
+      return sendJson(res, 200, result);
+    }
+
+    // ==================== HOST PROCESSES, PORTS, VPN & PING ====================
+    if (req.method === 'GET' && pathname === '/api/host/status') {
+      const docker = await collectDockerContainers();
+      const status = await collectHostAndNetworkStatus(docker.containers || []);
+      return sendJson(res, 200, status);
+    }
+
+    if (req.method === 'POST' && pathname === '/api/host/ping-targets') {
+      const body = await readJsonBody(req);
+      savePingTargets(body.targets || []);
+      const docker = await collectDockerContainers();
+      const status = await collectHostAndNetworkStatus(docker.containers || []);
+      return sendJson(res, 200, status);
     }
 
     // ==================== TELEMETRY & SNAPSHOT ====================
@@ -350,6 +576,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && pathname === '/api/system/power') {
       const body = await readJsonBody(req);
+      logAuditEvent(req, 'system.power', `Server Power-Aktion: ${body.action}`, 'warn');
       return sendJson(res, 200, triggerHostPower(body.action));
     }
 
@@ -365,7 +592,7 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, updated);
     }
 
-    // ==================== FILES MANAGER ====================
+    // ==================== FILES MANAGER PRO & SHARES ====================
     if (req.method === 'GET' && pathname === '/api/files/list') {
       const targetPath = url.searchParams.get('path') || '/';
       const cfg = loadConfig();
@@ -377,6 +604,45 @@ const server = http.createServer(async (req, res) => {
       const targetPath = url.searchParams.get('path') || '/';
       const cfg = loadConfig();
       return sendJson(res, 200, await listDirectoriesOnly(targetPath, cfg.mediaPaths));
+    }
+
+    if (req.method === 'GET' && pathname === '/api/files/search') {
+      const query = url.searchParams.get('q') || '';
+      const cfg = loadConfig();
+      return sendJson(res, 200, await searchLiveFiles(query, cfg.mediaPaths));
+    }
+
+    if (req.method === 'GET' && pathname === '/api/files/thumb') {
+      const targetPath = url.searchParams.get('path') || '';
+      const cfg = loadConfig();
+      return await streamThumbnail(req, res, targetPath, cfg.mediaPaths);
+    }
+
+    if (req.method === 'GET' && pathname === '/api/files/video') {
+      const targetPath = url.searchParams.get('path') || '';
+      const startSec = Number(url.searchParams.get('start')) || 0;
+      const cfg = loadConfig();
+      return await streamVideoTranscode(req, res, targetPath, startSec, cfg.mediaPaths);
+    }
+
+    if (req.method === 'GET' && pathname === '/api/shares') {
+      return sendJson(res, 200, { shares: listShares() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/shares') {
+      const body = await readJsonBody(req);
+      const cfg = loadConfig();
+      const share = createShare(body, cfg.mediaPaths);
+      logAuditEvent(req, 'share.create', `Freigabe erstellt für "${share.name}" (${share.hasPassword ? 'mit Passwort' : 'ohne Passwort'}).`, 'info');
+      return sendJson(res, 200, share);
+    }
+
+    const delShareMatch = pathname.match(/^\/api\/shares\/([^/]+)$/);
+    if (req.method === 'DELETE' && delShareMatch) {
+      const shareId = safeDecodeParam(delShareMatch[1]);
+      const result = revokeShare(shareId);
+      logAuditEvent(req, 'share.revoke', `Freigabe ${shareId} widerrufen.`, 'info');
+      return sendJson(res, 200, result);
     }
 
     if (req.method === 'GET' && pathname === '/api/files/trash') {
@@ -404,8 +670,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/files/raw') {
       const targetPath = url.searchParams.get('path') || '';
       const download = url.searchParams.get('download') === '1';
+      const inline = url.searchParams.get('inline') === '1';
       const cfg = loadConfig();
-      return await streamLiveFile(req, res, targetPath, cfg.mediaPaths, download);
+      return await streamLiveFile(req, res, targetPath, cfg.mediaPaths, { forceDownload: download, inline });
     }
 
     if (req.method === 'GET' && pathname === '/api/files/text') {
@@ -507,7 +774,8 @@ const server = http.createServer(async (req, res) => {
       const schedId = safeDecodeParam(schedRunMatch[1]);
       const stateAfter = await runScheduleNow(schedId, {
         onMediaScan: () => buildSnapshot(true),
-        onStorageAnalysis: () => startStorageAnalysis([], loadConfig().mediaPaths)
+        onStorageAnalysis: () => startStorageAnalysis([], loadConfig().mediaPaths),
+        onTrashCleanup: (days) => cleanupExpiredTrash(days, loadConfig().mediaPaths)
       });
       return sendJson(res, 200, { ...stateAfter, wolDevices: listWolDevices() });
     }
@@ -533,17 +801,23 @@ const server = http.createServer(async (req, res) => {
     // ==================== STORAGE ADMIN & SMB ====================
     if (req.method === 'POST' && pathname === '/api/storage/mount') {
       const body = await readJsonBody(req);
-      return sendJson(res, 200, await mountHostDevice(body.devPath, body.mountPoint, body.persistFstab !== false));
+      const resMount = await mountHostDevice(body.devPath, body.mountPoint, body.persistFstab !== false);
+      logAuditEvent(req, 'storage.mount', `Laufwerk ${body.devPath} unter ${body.mountPoint} eingehängt.`, 'info');
+      return sendJson(res, 200, resMount);
     }
 
     if (req.method === 'POST' && pathname === '/api/storage/unmount') {
       const body = await readJsonBody(req);
-      return sendJson(res, 200, await unmountHostPath(body.mountPoint));
+      const resUnmount = await unmountHostPath(body.mountPoint);
+      logAuditEvent(req, 'storage.unmount', `Laufwerk ${body.mountPoint} ausgehängt.`, 'warn');
+      return sendJson(res, 200, resUnmount);
     }
 
     if (req.method === 'POST' && pathname === '/api/storage/format') {
       const body = await readJsonBody(req);
-      return sendJson(res, 200, await formatHostDevice(body.devPath, body.fsType, body.label));
+      const resFmt = await formatHostDevice(body.devPath, body.fsType, body.label);
+      logAuditEvent(req, 'storage.format', `Laufwerk ${body.devPath} als ${body.fsType || 'ext4'} formatiert.`, 'warn');
+      return sendJson(res, 200, resFmt);
     }
 
     if (req.method === 'GET' && pathname === '/api/smb/status') {
@@ -624,7 +898,32 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, result);
     }
 
-    // ==================== DOCKER CONTAINER ACTIONS ====================
+    // ==================== DOCKER MAINTENANCE & CONTAINER ACTIONS ====================
+    if (req.method === 'POST' && pathname === '/api/docker/check-updates') {
+      const result = await checkContainerUpdates();
+      return sendJson(res, 200, result);
+    }
+
+    if (req.method === 'GET' && pathname === '/api/docker/disk-usage') {
+      return sendJson(res, 200, await getDockerDiskUsage());
+    }
+
+    if (req.method === 'POST' && pathname === '/api/docker/prune') {
+      const body = await readJsonBody(req);
+      const result = await pruneDockerResources({
+        images: body.images !== false,
+        buildCache: body.buildCache !== false,
+        volumes: body.volumes === true
+      });
+      logAuditEvent(
+        req,
+        'docker.prune',
+        `Docker Bereinigung: ${Math.round((result.reclaimedBytes || 0) / (1024 * 1024))} MB freigegeben (${result.imagesDeleted} Images, ${result.volumesDeleted} Volumes).`,
+        'ok'
+      );
+      return sendJson(res, 200, result);
+    }
+
     const inspectMatch = pathname.match(/^\/api\/docker\/([^/]+)\/inspect$/);
     if (req.method === 'GET' && inspectMatch) {
       const containerId = safeDecodeParam(inspectMatch[1]);
@@ -638,6 +937,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const override = updateMatch[2] === 'recreate' ? body : null;
       const result = await recreateOrUpdateContainer(containerId, override);
+      logAuditEvent(req, `docker.${updateMatch[2]}`, `Container "${result.name}" (${result.image}) neu erstellt/aktualisiert.`, 'info');
       return sendJson(res, 200, result);
     }
 
@@ -656,6 +956,7 @@ const server = http.createServer(async (req, res) => {
 
       if (action === 'remove') {
         const result = await removeContainer(containerId, true);
+        logAuditEvent(req, 'docker.remove', `Container ${containerId} gelöscht.`, 'warn');
         return sendJson(res, 200, result);
       }
 
@@ -702,7 +1003,8 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 server.listen(PORT, HOST, () => {
   startWatchdogScheduler({
     onMediaScan: () => buildSnapshot(true),
-    onStorageAnalysis: () => startStorageAnalysis([], loadConfig().mediaPaths)
+    onStorageAnalysis: () => startStorageAnalysis([], loadConfig().mediaPaths),
+    onTrashCleanup: (days) => cleanupExpiredTrash(days, loadConfig().mediaPaths)
   });
   console.log(`Homeserver Dashboard läuft auf http://${HOST}:${PORT}`);
 });

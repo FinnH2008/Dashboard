@@ -1,12 +1,26 @@
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
-const { execFile, spawn } = require('node:child_process');
+const { execFile, execFileSync, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
 
 const ALLOW_WRITE = String(process.env.ALLOW_FILE_WRITE || 'true').toLowerCase() !== 'false';
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+
+let cachedFfmpegAvailable = null;
+function hasFfmpeg() {
+  if (cachedFfmpegAvailable !== null) return cachedFfmpegAvailable;
+  try {
+    execFileSync('ffmpeg', ['-version'], { stdio: 'ignore', timeout: 2000 });
+    cachedFfmpegAvailable = true;
+  } catch {
+    cachedFfmpegAvailable = false;
+  }
+  return cachedFfmpegAvailable;
+}
 
 const MIME_MAP = {
   '.jpg': 'image/jpeg',
@@ -24,20 +38,40 @@ const MIME_MAP = {
   '.mov': 'video/quicktime',
   '.mkv': 'video/x-matroska',
   '.avi': 'video/x-msvideo',
+  '.wmv': 'video/x-ms-wmv',
+  '.ts': 'video/mp2t',
+  '.mts': 'video/mp2t',
   '.mp3': 'audio/mpeg',
   '.flac': 'audio/flac',
   '.wav': 'audio/wav',
   '.ogg': 'audio/ogg',
   '.m4a': 'audio/mp4',
+  '.opus': 'audio/opus',
+  '.aac': 'audio/aac',
   '.pdf': 'application/pdf',
   '.txt': 'text/plain; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8',
+  '.markdown': 'text/markdown; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.yml': 'text/yaml; charset=utf-8',
   '.yaml': 'text/yaml; charset=utf-8',
+  '.toml': 'text/plain; charset=utf-8',
   '.env': 'text/plain; charset=utf-8',
   '.conf': 'text/plain; charset=utf-8',
+  '.cfg': 'text/plain; charset=utf-8',
+  '.ini': 'text/plain; charset=utf-8',
   '.log': 'text/plain; charset=utf-8',
+  '.sh': 'text/plain; charset=utf-8',
+  '.py': 'text/plain; charset=utf-8',
+  '.js': 'text/plain; charset=utf-8',
+  '.mjs': 'text/plain; charset=utf-8',
+  '.cjs': 'text/plain; charset=utf-8',
+  '.css': 'text/plain; charset=utf-8',
+  '.html': 'text/plain; charset=utf-8',
+  '.xml': 'text/plain; charset=utf-8',
+  '.csv': 'text/csv; charset=utf-8',
+  '.sql': 'text/plain; charset=utf-8',
+  '.service': 'text/plain; charset=utf-8',
   '.zip': 'application/zip',
   '.tar': 'application/x-tar',
   '.gz': 'application/gzip'
@@ -47,15 +81,33 @@ const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.
 const VIDEO_EXTS = new Set(['.mp4', '.m4v', '.webm', '.mov', '.mkv', '.avi', '.wmv', '.ts', '.mts']);
 const AUDIO_EXTS = new Set(['.mp3', '.flac', '.wav', '.ogg', '.m4a', '.opus', '.aac']);
 const ARCHIVE_EXTS = new Set(['.zip', '.tar', '.gz', '.tgz', '.zst', '.7z', '.rar', '.bak', '.iso', '.img']);
-const TEXT_EXTS = new Set(['.txt', '.md', '.json', '.yml', '.yaml', '.env', '.conf', '.cfg', '.ini', '.log', '.sh', '.xml', '.csv']);
+const TEXT_EXTS = new Set([
+  '.txt', '.md', '.markdown', '.json', '.yml', '.yaml', '.toml', '.env', '.conf',
+  '.cfg', '.ini', '.log', '.sh', '.bash', '.zsh', '.py', '.js', '.mjs', '.cjs',
+  '.jsx', '.tsx', '.css', '.scss', '.html', '.htm', '.xml', '.csv', '.sql',
+  '.service', '.timer', '.rules', '.list', '.properties'
+]);
+const EXTENSIONLESS_TEXT_NAMES = new Set([
+  'dockerfile', 'makefile', 'caddyfile', 'procfile', 'vagrantfile',
+  'gemfile', 'license', 'readme', '.gitignore', '.dockerignore', '.editorconfig', '.env'
+]);
 
 function classifyFileKind(ext, name = '') {
+  if (ext === '.pdf') return 'pdf';
   if (IMAGE_EXTS.has(ext)) return 'image';
   if (VIDEO_EXTS.has(ext)) return 'video';
   if (AUDIO_EXTS.has(ext)) return 'audio';
   if (ARCHIVE_EXTS.has(ext)) return 'archive';
-  if (TEXT_EXTS.has(ext) || name.startsWith('.env')) return 'text';
-  if (['.pdf', '.doc', '.docx'].includes(ext)) return 'document';
+  const lowerName = String(name || '').toLowerCase();
+  if (
+    TEXT_EXTS.has(ext) ||
+    lowerName.startsWith('.env') ||
+    EXTENSIONLESS_TEXT_NAMES.has(lowerName) ||
+    lowerName.startsWith('dockerfile.')
+  ) {
+    return 'text';
+  }
+  if (['.doc', '.docx', '.odt', '.rtf'].includes(ext)) return 'document';
   return 'other';
 }
 
@@ -185,18 +237,38 @@ async function listLiveDirectory(requestedPath, configMediaPaths = []) {
   const items = [];
 
   for (const entry of entries) {
-    if (entry.name.startsWith('.') && !entry.name.startsWith('.env')) continue;
+    if (
+      entry.name.startsWith('.') &&
+      !entry.name.startsWith('.env') &&
+      entry.name !== '.gitignore' &&
+      entry.name !== '.dockerignore' &&
+      entry.name !== '.editorconfig'
+    ) {
+      continue;
+    }
     if (entry.name === 'lost+found' || entry.name === '@eaDir') continue;
     const fullPath = path.join(realDir, entry.name);
     try {
       const st = await fsp.stat(fullPath);
       const isDir = st.isDirectory();
       const ext = isDir ? '' : path.extname(entry.name).toLowerCase();
+      let kind = isDir ? 'folder' : classifyFileKind(ext, entry.name);
+      if (!isDir && kind === 'other' && !ext && st.size > 0 && st.size <= 2 * 1024 * 1024) {
+        try {
+          const fh = await fsp.open(fullPath, 'r');
+          const probe = Buffer.alloc(Math.min(512, st.size));
+          await fh.read(probe, 0, probe.length, 0);
+          await fh.close();
+          if (!probe.includes(0)) kind = 'text';
+        } catch {
+          // ignore probe errors
+        }
+      }
       items.push({
         name: entry.name,
         path: fullPath,
         isDirectory: isDir,
-        kind: isDir ? 'folder' : classifyFileKind(ext, entry.name),
+        kind,
         sizeBytes: isDir ? 0 : st.size,
         modifiedAt: st.mtime.toISOString(),
         ext
@@ -239,7 +311,21 @@ function pipeReadStream(fileStream, res) {
   fileStream.pipe(res);
 }
 
-async function streamLiveFile(req, res, requestedPath, configMediaPaths = [], forceDownload = false) {
+function isSafeInlineMime(mime) {
+  if (!mime) return false;
+  if (mime === 'application/pdf') return true;
+  if (mime.startsWith('image/') && mime !== 'image/svg+xml') return true;
+  if (mime.startsWith('audio/') || mime.startsWith('video/')) return true;
+  return false;
+}
+
+async function streamLiveFile(req, res, requestedPath, configMediaPaths = [], options = false) {
+  const opts = typeof options === 'object' && options !== null
+    ? options
+    : { forceDownload: Boolean(options), inline: false };
+  const forceDownload = Boolean(opts.forceDownload);
+  const inline = Boolean(opts.inline);
+
   const roots = getAllowedRoots(configMediaPaths);
   const realFile = assertAllowedPath(requestedPath, roots);
   const stat = await statExisting(realFile);
@@ -261,6 +347,9 @@ async function streamLiveFile(req, res, requestedPath, configMediaPaths = [], fo
 
   if (forceDownload) {
     headers['Content-Disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  } else if (inline) {
+    const disposition = isSafeInlineMime(mime) ? 'inline' : 'attachment';
+    headers['Content-Disposition'] = `${disposition}; filename*=UTF-8''${encodeURIComponent(filename)}`;
   }
 
   const range = req.headers.range;
@@ -641,8 +730,17 @@ async function readLiveTextFile(targetPath, configMediaPaths = []) {
   const st = await statExisting(realFile);
   if (!st.isFile()) throw new Error('Keine Datei');
   if (st.size > 2 * 1024 * 1024) throw new Error('Datei zu groß für den Browser-Editor (Max 2 MB).');
-  const content = await fsp.readFile(realFile, 'utf8');
-  return { path: realFile, name: path.basename(realFile), content };
+  const buf = await fsp.readFile(realFile);
+  const sampleLen = Math.min(buf.length, 8192);
+  for (let i = 0; i < sampleLen; i += 1) {
+    if (buf[i] === 0) {
+      const err = new Error('Binärdatei kann nicht im Text-Editor geöffnet werden.');
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+  const content = buf.toString('utf8');
+  return { path: realFile, name: path.basename(realFile), ext: path.extname(realFile).toLowerCase(), content };
 }
 
 async function writeLiveTextFile(targetPath, content, configMediaPaths = []) {
@@ -725,11 +823,272 @@ async function extractLiveArchive(archivePath, configMediaPaths = []) {
   return { ok: true };
 }
 
+async function streamVideoTranscode(req, res, requestedPath, startSeconds = 0, configMediaPaths = []) {
+  const roots = getAllowedRoots(configMediaPaths);
+  const realFile = assertAllowedPath(requestedPath, roots);
+  const st = await statExisting(realFile);
+  if (!st.isFile()) {
+    const err = new Error('Videodatei nicht gefunden');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  if (!hasFfmpeg()) {
+    const err = new Error('Live-Transkodierung erfordert ffmpeg (im Docker-Image vorinstalliert). Bitte „Herunterladen“ oder natives MP4/WebM nutzen.');
+    err.statusCode = 501;
+    throw err;
+  }
+
+  const start = Math.max(0, Math.min(86400, Number(startSeconds) || 0));
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'error',
+    ...(start > 0 ? ['-ss', String(start)] : []),
+    '-i', realFile,
+    '-map', '0:v:0',
+    '-map', '0:a:0?',
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    '-crf', '23',
+    '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac',
+    '-b:a', '160k',
+    '-ac', '2',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+    '-f', 'mp4',
+    'pipe:1'
+  ];
+
+  res.writeHead(200, {
+    'Content-Type': 'video/mp4',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff'
+  });
+
+  const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'ignore'] });
+  ff.stdout.pipe(res);
+  res.once('close', () => {
+    if (!ff.killed) ff.kill('SIGKILL');
+  });
+  ff.on('error', () => {
+    if (!res.headersSent) res.writeHead(500);
+    if (!res.writableEnded) res.end();
+  });
+}
+
+function sendFallbackSvgThumb(res, label = 'VIDEO') {
+  const safeLabel = String(label || 'VIDEO').replace(/[^A-Z0-9._-]/gi, '').slice(0, 8).toUpperCase() || 'VIDEO';
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200">` +
+    `<rect width="320" height="200" rx="14" fill="#181c24"/>` +
+    `<circle cx="160" cy="88" r="30" fill="#2c3342"/>` +
+    `<polygon points="151,74 151,102 176,88" fill="#e5e9f0"/>` +
+    `<text x="160" y="148" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="600" fill="#9aa5b5">${safeLabel}</text>` +
+    `</svg>`;
+  const buf = Buffer.from(svg, 'utf8');
+  res.writeHead(200, {
+    'Content-Type': 'image/svg+xml; charset=utf-8',
+    'Content-Length': buf.length,
+    'Cache-Control': 'public, max-age=3600',
+    'X-Content-Type-Options': 'nosniff'
+  });
+  res.end(buf);
+}
+
+async function streamThumbnail(req, res, requestedPath, configMediaPaths = []) {
+  const roots = getAllowedRoots(configMediaPaths);
+  const realFile = assertAllowedPath(requestedPath, roots);
+  const st = await statExisting(realFile);
+  if (!st.isFile()) {
+    res.writeHead(404);
+    res.end();
+    return;
+  }
+
+  const ext = path.extname(realFile).toLowerCase();
+  const isVideo = VIDEO_EXTS.has(ext);
+  const isImage = IMAGE_EXTS.has(ext);
+
+  if (!hasFfmpeg() || ext === '.svg') {
+    if (isImage) {
+      return await streamLiveFile(req, res, realFile, configMediaPaths, { inline: true });
+    }
+    if (isVideo) {
+      return sendFallbackSvgThumb(res, ext.slice(1) || 'VIDEO');
+    }
+    res.writeHead(404);
+    res.end();
+    return;
+  }
+
+  const thumbDir = path.join(DATA_DIR, 'thumbs');
+  await fsp.mkdir(thumbDir, { recursive: true });
+  const hash = crypto.createHash('sha256').update(`${realFile}:${st.size}:${Math.floor(st.mtimeMs)}`).digest('hex').slice(0, 32);
+  const thumbPath = path.join(thumbDir, `${hash}.jpg`);
+
+  if (!fs.existsSync(thumbPath)) {
+    const args = isVideo
+      ? ['-y', '-hide_banner', '-loglevel', 'error', '-ss', '2', '-i', realFile, '-vf', 'scale=320:-2', '-frames:v', '1', '-q:v', '5', thumbPath]
+      : ['-y', '-hide_banner', '-loglevel', 'error', '-i', realFile, '-vf', 'scale=320:-2', '-frames:v', '1', '-q:v', '5', thumbPath];
+    try {
+      await execFileAsync('ffmpeg', args, { timeout: 12000 });
+    } catch {
+      if (isImage) {
+        return await streamLiveFile(req, res, realFile, configMediaPaths, { inline: true });
+      }
+      if (isVideo) {
+        return sendFallbackSvgThumb(res, ext.slice(1) || 'VIDEO');
+      }
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+  }
+
+  if (fs.existsSync(thumbPath)) {
+    const tStat = await fsp.stat(thumbPath);
+    res.writeHead(200, {
+      'Content-Type': 'image/jpeg',
+      'Content-Length': tStat.size,
+      'Cache-Control': 'public, max-age=86400',
+      'X-Content-Type-Options': 'nosniff'
+    });
+    pipeReadStream(fs.createReadStream(thumbPath), res);
+    return;
+  }
+
+  if (isImage) {
+    return await streamLiveFile(req, res, realFile, configMediaPaths, { inline: true });
+  }
+  if (isVideo) {
+    return sendFallbackSvgThumb(res, ext.slice(1) || 'VIDEO');
+  }
+  res.writeHead(404);
+  res.end();
+}
+
+async function searchLiveFiles(query, configMediaPaths = [], limit = 80) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return { query: '', items: [], truncated: false };
+
+  const roots = getAllowedRoots(configMediaPaths);
+  const results = [];
+  const maxResults = Math.max(10, Math.min(200, Number(limit) || 80));
+  const MAX_VISITED = 15000;
+  const MAX_DEPTH = 8;
+  let visited = 0;
+  let truncated = false;
+
+  const stack = roots.map((r) => ({ dir: r, depth: 0 }));
+
+  while (stack.length > 0) {
+    const { dir, depth } = stack.pop();
+    if (depth > MAX_DEPTH) continue;
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name === TRASH_DIR_NAME || entry.name === 'lost+found' || entry.name === '@eaDir' || entry.name === '.git' || entry.name === 'node_modules') {
+        continue;
+      }
+      if (entry.name.startsWith('.') && !entry.name.startsWith('.env') && entry.name !== '.gitignore' && entry.name !== '.dockerignore') {
+        continue;
+      }
+      visited += 1;
+      if (visited > MAX_VISITED) {
+        truncated = true;
+        break;
+      }
+
+      const fullPath = path.join(dir, entry.name);
+      const isDir = entry.isDirectory();
+      const lowerName = entry.name.toLowerCase();
+      if (lowerName.includes(q)) {
+        try {
+          const st = await fsp.stat(fullPath);
+          const ext = isDir ? '' : path.extname(entry.name).toLowerCase();
+          results.push({
+            name: entry.name,
+            path: fullPath,
+            parentDir: dir,
+            isDirectory: isDir,
+            kind: isDir ? 'folder' : classifyFileKind(ext, entry.name),
+            sizeBytes: isDir ? 0 : st.size,
+            modifiedAt: st.mtime.toISOString(),
+            ext
+          });
+          if (results.length >= maxResults) {
+            truncated = true;
+            break;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (isDir && depth < MAX_DEPTH) {
+        stack.push({ dir: fullPath, depth: depth + 1 });
+      }
+    }
+    if (truncated) break;
+  }
+
+  return {
+    query: String(query).trim(),
+    allowWrite: ALLOW_WRITE,
+    truncated,
+    items: results
+  };
+}
+
+async function cleanupExpiredTrash(maxAgeDays = 30, configMediaPaths = []) {
+  const days = Math.max(1, Number(maxAgeDays) || 30);
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const roots = getAllowedRoots(configMediaPaths);
+  let removedCount = 0;
+
+  for (const rootPath of roots) {
+    const trashDir = getTrashDirForRoot(rootPath);
+    if (!fs.existsSync(trashDir)) continue;
+    const manifest = await readTrashManifest(rootPath);
+    const keep = [];
+    let changed = false;
+
+    for (const item of manifest) {
+      const deletedTs = item.deletedAt ? new Date(item.deletedAt).getTime() : 0;
+      if (deletedTs > 0 && deletedTs < cutoffMs) {
+        const storedPath = path.join(trashDir, item.id);
+        if (fs.existsSync(storedPath)) {
+          await fsp.rm(storedPath, { recursive: true, force: true });
+        }
+        removedCount += 1;
+        changed = true;
+      } else {
+        keep.push(item);
+      }
+    }
+    if (changed) {
+      await writeTrashManifest(rootPath, keep);
+    }
+  }
+  return { ok: true, removedCount };
+}
+
 module.exports = {
   getAllowedRoots,
+  assertAllowedPath,
+  classifyFileKind,
+  hasFfmpeg,
   listLiveDirectory,
   listDirectoriesOnly,
   streamLiveFile,
+  streamVideoTranscode,
+  streamThumbnail,
+  searchLiveFiles,
+  cleanupExpiredTrash,
   createLiveFolder,
   renameLiveItem,
   copyOrMoveLiveItems,

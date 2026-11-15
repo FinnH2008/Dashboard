@@ -5,6 +5,7 @@ const DOCKER_SOCKET = process.env.DOCKER_SOCKET || '/var/run/docker.sock';
 const ALLOW_CONTROL = String(process.env.ALLOW_DOCKER_CONTROL || 'false').toLowerCase() === 'true';
 
 const statsCache = new Map();
+const updateCheckCache = new Map(); // image -> { checkedAt, localDigest, remoteDigest, updateAvailable, error }
 
 function dockerRequest(method, apiPath, timeoutMs = 3000, bodyObj = null) {
   return new Promise((resolve, reject) => {
@@ -193,6 +194,7 @@ async function collectDockerContainers() {
         ? 'starting'
         : null;
 
+      const upd = updateCheckCache.get(c.Image) || null;
       return {
         id: c.Id.slice(0, 12),
         fullId: c.Id,
@@ -203,6 +205,8 @@ async function collectDockerContainers() {
         state: c.State,
         statusText: c.Status,
         health,
+        updateAvailable: Boolean(upd?.updateAvailable),
+        updateCheckedAt: upd?.checkedAt || null,
         created: new Date(c.Created * 1000).toISOString(),
         ports: formatPorts(c.Ports),
         cpuPercent: stats.cpuPercent,
@@ -503,11 +507,276 @@ async function recreateOrUpdateContainer(containerId, overrideConfig = null) {
   const fullImage = await pullImage(next.image);
   await removeContainer(containerId, true);
 
+  updateCheckCache.delete(current.image);
+  updateCheckCache.delete(fullImage);
+
   return await createAndStartContainer({
     ...next,
     image: fullImage,
     skipPull: true
   });
+}
+
+function parseImageRef(rawImage) {
+  const withoutDigest = String(rawImage || '').split('@')[0].trim();
+  if (!withoutDigest) return null;
+
+  const lastColon = withoutDigest.lastIndexOf(':');
+  const lastSlash = withoutDigest.lastIndexOf('/');
+  let namePart = withoutDigest;
+  let tag = 'latest';
+  if (lastColon > lastSlash) {
+    namePart = withoutDigest.slice(0, lastColon);
+    tag = withoutDigest.slice(lastColon + 1) || 'latest';
+  }
+
+  const segments = namePart.split('/');
+  let registry = 'registry-1.docker.io';
+  let repo = namePart;
+
+  if (segments.length > 1 && (segments[0].includes('.') || segments[0].includes(':') || segments[0] === 'localhost')) {
+    registry = segments[0];
+    repo = segments.slice(1).join('/');
+  } else if (segments.length === 1) {
+    repo = `library/${segments[0]}`;
+  }
+
+  return { registry, repo, tag };
+}
+
+function parseWwwAuthenticate(headerVal) {
+  if (!headerVal) return null;
+  const match = headerVal.match(/Bearer\s+(.+)/i);
+  if (!match) return null;
+  const params = {};
+  const regex = /(\w+)="([^"]*)"/g;
+  let m;
+  while ((m = regex.exec(match[1])) !== null) {
+    params[m[1]] = m[2];
+  }
+  return params.realm ? params : null;
+}
+
+async function fetchRemoteManifestDigest(imageRefStr) {
+  const ref = parseImageRef(imageRefStr);
+  if (!ref) throw new Error('Ungültige Image-Referenz');
+
+  const accept = [
+    'application/vnd.docker.distribution.manifest.v2+json',
+    'application/vnd.docker.distribution.manifest.list.v2+json',
+    'application/vnd.oci.image.manifest.v1+json',
+    'application/vnd.oci.image.index.v1+json'
+  ].join(', ');
+
+  const proto = ref.registry.startsWith('localhost') ? 'http' : 'https';
+  const manifestUrl = `${proto}://${ref.registry}/v2/${ref.repo}/manifests/${ref.tag}`;
+
+  let token = '';
+  if (ref.registry === 'registry-1.docker.io') {
+    const tokenRes = await fetch(
+      `https://auth.docker.io/token?service=registry.docker.io&scope=${encodeURIComponent(`repository:${ref.repo}:pull`)}`,
+      { signal: AbortSignal.timeout(5000) }
+    );
+    if (tokenRes.ok) {
+      const tokenData = await tokenRes.json();
+      token = tokenData.token || tokenData.access_token || '';
+    }
+  }
+
+  const makeHeaders = (bearer) => ({
+    Accept: accept,
+    ...(bearer ? { Authorization: `Bearer ${bearer}` } : {})
+  });
+
+  let res = await fetch(manifestUrl, {
+    method: 'HEAD',
+    headers: makeHeaders(token),
+    signal: AbortSignal.timeout(6000)
+  });
+
+  if (res.status === 401) {
+    const authParams = parseWwwAuthenticate(res.headers.get('www-authenticate'));
+    if (authParams?.realm) {
+      const qs = new URLSearchParams();
+      if (authParams.service) qs.set('service', authParams.service);
+      qs.set('scope', authParams.scope || `repository:${ref.repo}:pull`);
+      const tRes = await fetch(`${authParams.realm}?${qs.toString()}`, {
+        signal: AbortSignal.timeout(5000)
+      });
+      if (tRes.ok) {
+        const tJson = await tRes.json();
+        const nextToken = tJson.token || tJson.access_token || '';
+        if (nextToken) {
+          res = await fetch(manifestUrl, {
+            method: 'HEAD',
+            headers: makeHeaders(nextToken),
+            signal: AbortSignal.timeout(6000)
+          });
+        }
+      }
+    }
+  }
+
+  if (!res.ok) {
+    throw new Error(`Registry HTTP ${res.status}`);
+  }
+  const digest = res.headers.get('docker-content-digest');
+  if (!digest) throw new Error('Kein Manifest-Digest von Registry erhalten');
+  return digest.trim();
+}
+
+async function inspectImageRepoDigests(imageName) {
+  const info = await dockerJson('GET', `/images/${encodeURIComponent(imageName)}/json`, 3500);
+  const digests = Array.isArray(info?.RepoDigests) ? info.RepoDigests : [];
+  return digests.map((d) => {
+    const atIdx = d.lastIndexOf('@');
+    return atIdx >= 0 ? d.slice(atIdx + 1) : d;
+  });
+}
+
+async function checkContainerUpdates() {
+  if (!fs.existsSync(DOCKER_SOCKET)) {
+    throw new Error('Docker Socket (/var/run/docker.sock) ist nicht gemountet.');
+  }
+  const rawList = await dockerJson('GET', '/containers/json?all=true', 3000);
+  const uniqueImages = [...new Set(rawList.map((c) => c.Image).filter(Boolean))];
+  const checkedAt = new Date().toISOString();
+
+  await Promise.all(
+    uniqueImages.map(async (imageName) => {
+      try {
+        const [localDigests, remoteDigest] = await Promise.all([
+          inspectImageRepoDigests(imageName),
+          fetchRemoteManifestDigest(imageName)
+        ]);
+        const updateAvailable = localDigests.length > 0 && !localDigests.includes(remoteDigest);
+        updateCheckCache.set(imageName, {
+          checkedAt,
+          localDigests,
+          remoteDigest,
+          updateAvailable,
+          error: null
+        });
+      } catch (err) {
+        updateCheckCache.set(imageName, {
+          checkedAt,
+          localDigests: [],
+          remoteDigest: null,
+          updateAvailable: false,
+          error: err.message
+        });
+      }
+    })
+  );
+
+  const results = rawList.map((c) => {
+    const name = (c.Names?.[0] || c.Id.slice(0, 12)).replace(/^\//, '');
+    const status = updateCheckCache.get(c.Image) || { updateAvailable: false, error: null };
+    return {
+      id: c.Id.slice(0, 12),
+      name,
+      image: c.Image,
+      updateAvailable: Boolean(status.updateAvailable),
+      remoteDigest: status.remoteDigest,
+      error: status.error || null
+    };
+  });
+
+  return {
+    checkedAt,
+    checkedImages: uniqueImages.length,
+    updatesAvailable: results.filter((r) => r.updateAvailable).length,
+    results
+  };
+}
+
+async function getDockerDiskUsage() {
+  if (!fs.existsSync(DOCKER_SOCKET)) {
+    return {
+      available: false,
+      allowControl: ALLOW_CONTROL,
+      imagesTotalSize: 0,
+      imagesReclaimableSize: 0,
+      unusedImagesCount: 0,
+      volumesTotalSize: 0,
+      danglingVolumesCount: 0,
+      volumesReclaimableSize: 0,
+      buildCacheSize: 0,
+      totalReclaimableSize: 0
+    };
+  }
+  const df = await dockerJson('GET', '/system/df', 15000);
+  const images = Array.isArray(df?.Images) ? df.Images : [];
+  const volumes = Array.isArray(df?.Volumes) ? df.Volumes : [];
+  const buildCache = Array.isArray(df?.BuildCache) ? df.BuildCache : [];
+
+  const imagesTotalSize = images.reduce((acc, i) => acc + Math.max(0, Number(i.Size) || 0), 0);
+  const unusedImages = images.filter((i) => (Number(i.Containers) || 0) === 0);
+  const imagesReclaimableSize = unusedImages.reduce((acc, i) => acc + Math.max(0, Number(i.Size) || 0), 0);
+
+  const volumesTotalSize = volumes.reduce((acc, v) => acc + Math.max(0, Number(v.UsageData?.Size) || 0), 0);
+  const danglingVolumes = volumes.filter((v) => (Number(v.UsageData?.RefCount) || 0) === 0);
+  const volumesReclaimableSize = danglingVolumes.reduce((acc, v) => acc + Math.max(0, Number(v.UsageData?.Size) || 0), 0);
+
+  const buildCacheSize = buildCache.reduce((acc, b) => acc + Math.max(0, Number(b.Size) || 0), 0);
+
+  return {
+    available: true,
+    allowControl: ALLOW_CONTROL,
+    imagesCount: images.length,
+    unusedImagesCount: unusedImages.length,
+    imagesTotalSize,
+    imagesReclaimableSize,
+    volumesCount: volumes.length,
+    danglingVolumesCount: danglingVolumes.length,
+    volumesTotalSize,
+    volumesReclaimableSize,
+    buildCacheCount: buildCache.length,
+    buildCacheSize,
+    totalReclaimableSize: imagesReclaimableSize + buildCacheSize + volumesReclaimableSize
+  };
+}
+
+async function pruneDockerResources({ images = true, buildCache = true, volumes = false } = {}) {
+  if (!ALLOW_CONTROL) {
+    throw new Error('Container-Steuerung ist deaktiviert (ALLOW_DOCKER_CONTROL=true setzen).');
+  }
+  let reclaimedBytes = 0;
+  let imagesDeleted = 0;
+  let volumesDeleted = 0;
+
+  if (images) {
+    // Only prune unused images when dangling=false is explicitly requested or prune dangling + unused safely
+    const imgRes = await dockerJson('POST', '/images/prune?filters=%7B%22dangling%22%3A%5B%22false%22%5D%7D', 60_000).catch(() => null);
+    if (imgRes) {
+      reclaimedBytes += Number(imgRes.SpaceReclaimed) || 0;
+      imagesDeleted += Array.isArray(imgRes.ImagesDeleted) ? imgRes.ImagesDeleted.length : 0;
+    }
+  }
+
+  if (buildCache) {
+    const bcRes = await dockerJson('POST', '/build/prune', 60_000).catch(() => null);
+    if (bcRes) {
+      reclaimedBytes += Number(bcRes.SpaceReclaimed) || 0;
+    }
+  }
+
+  if (volumes) {
+    const volRes = await dockerJson('POST', '/volumes/prune', 60_000).catch(() => null);
+    if (volRes) {
+      reclaimedBytes += Number(volRes.SpaceReclaimed) || 0;
+      volumesDeleted += Array.isArray(volRes.VolumesDeleted) ? volRes.VolumesDeleted.length : 0;
+    }
+  }
+
+  const diskUsage = await getDockerDiskUsage().catch(() => null);
+  return {
+    ok: true,
+    reclaimedBytes,
+    imagesDeleted,
+    volumesDeleted,
+    diskUsage
+  };
 }
 
 module.exports = {
@@ -520,5 +789,8 @@ module.exports = {
   removeContainer,
   createAndStartContainer,
   inspectContainerConfig,
-  recreateOrUpdateContainer
+  recreateOrUpdateContainer,
+  checkContainerUpdates,
+  getDockerDiskUsage,
+  pruneDockerResources
 };

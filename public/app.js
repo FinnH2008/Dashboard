@@ -15,6 +15,7 @@
     files: 'Dateimanager & Papierkorb',
     storage: 'Festplatten & Blockgeräte',
     smb: 'Freigaben (SMB / Samba)',
+    host: 'Host-Prozesse, Ports & Netzwerk',
     docker: 'Docker-Container',
     portainer: 'Portainer & Compose Stacks',
     appstore: 'Homeserver App Store',
@@ -23,6 +24,13 @@
     settings: 'System- & Design-Einstellungen'
   };
   const THEMES = ['studio-dark', 'studio-light', 'oled', 'slate', 'indigo'];
+  const THEME_CANVAS_COLORS = {
+    'studio-dark': '#141518',
+    'studio-light': '#f5f5f7',
+    oled: '#000000',
+    slate: '#12171e',
+    indigo: '#0f1120'
+  };
   const THEME_LABELS = {
     dark: 'Studio Dark',
     'studio-dark': 'Studio Dark',
@@ -60,13 +68,29 @@
     filesPath: '/',
     filesViewMode: 'list', // 'list' | 'grid'
     filesListing: null,
+    filesSearchScope: 'folder', // 'folder' | 'global'
+    filesGlobalResults: null,
+    filesGlobalSearchTimer: null,
     selectedFiles: new Set(),
     activeEditorPath: null,
+    activeEditorExt: '',
+    activeEditorMarkdownPreview: false,
+    activePreview: null,
     filesTrashMode: false,
     trashListing: null,
     selectedTrashKeys: new Set(),
+    sharesList: [],
     copyMoveSources: [],
     copyMoveBrowserPath: '/',
+    // Host & Network
+    hostData: null,
+    // Notifications & Security
+    notificationsState: null,
+    auditEvents: [],
+    deferredInstallPrompt: null,
+    // Global Search
+    globalFileSearchResults: [],
+    globalSearchTimer: null,
     // Smart Features
     analyzerData: null,
     analyzerPollTimer: null,
@@ -210,10 +234,19 @@
     });
   }
 
+  function updateMetaThemeColor(rawTheme) {
+    const theme = normalizeThemeName(rawTheme || document.documentElement.getAttribute('data-theme'));
+    const meta = document.getElementById('meta-theme-color');
+    if (meta) {
+      meta.setAttribute('content', THEME_CANVAS_COLORS[theme] || '#141518');
+    }
+  }
+
   function applyTheme(rawTheme, persistServer = false) {
     const theme = normalizeThemeName(rawTheme);
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('hs_theme', theme);
+    updateMetaThemeColor(theme);
 
     const isLight = theme === 'studio-light';
     document.getElementById('icon-sun').classList.toggle('hidden', !isLight);
@@ -249,6 +282,39 @@
     if (persistServer && state.snapshot) {
       saveConfigPatch({ ui: { accent: safeAccent } }).catch(() => {});
     }
+  }
+
+  function initPwa() {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+    const statusEl = document.getElementById('pwa-status-text');
+    const installBtn = document.getElementById('btn-pwa-install');
+    const isStandalone = window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    if (isStandalone && statusEl) {
+      statusEl.textContent = 'Dashboard läuft bereits als installierte Web-App.';
+    }
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      state.deferredInstallPrompt = e;
+      if (installBtn) installBtn.classList.remove('hidden');
+      if (statusEl) statusEl.textContent = 'Bereit zur Installation als eigenständige App auf diesem Gerät.';
+    });
+
+    window.addEventListener('appinstalled', () => {
+      state.deferredInstallPrompt = null;
+      if (installBtn) installBtn.classList.add('hidden');
+      if (statusEl) statusEl.textContent = 'App erfolgreich installiert.';
+    });
+
+    installBtn?.addEventListener('click', async () => {
+      if (!state.deferredInstallPrompt) return;
+      state.deferredInstallPrompt.prompt();
+      await state.deferredInstallPrompt.userChoice.catch(() => {});
+      state.deferredInstallPrompt = null;
+      installBtn.classList.add('hidden');
+    });
   }
 
   // ==================== OVERVIEW WIDGETS ====================
@@ -325,8 +391,11 @@
       if (state.filesTrashMode) loadTrashView();
       else loadFilesDirectory(state.filesPath);
       refreshTrashBadge();
+      refreshSharesBadge();
     } else if (viewName === 'smb') {
       loadSmbStatus();
+    } else if (viewName === 'host') {
+      loadHostStatus();
     } else if (viewName === 'portainer') {
       loadDeployedStacks();
     } else if (viewName === 'appstore') {
@@ -335,6 +404,10 @@
       loadAnalyzerStatus();
     } else if (viewName === 'automation') {
       loadAutomationState();
+      loadNotificationsState();
+    } else if (viewName === 'settings') {
+      loadAuthMeta();
+      loadAuditLog();
     }
   }
 
@@ -346,6 +419,8 @@
     document.getElementById(id).classList.add('hidden');
     if (id === 'modal-preview') {
       document.getElementById('media-preview-stage').innerHTML = '';
+      document.getElementById('preview-video-controls')?.classList.add('hidden');
+      state.activePreview = null;
     }
     if (id === 'modal-terminal' && state.termSocket) {
       state.termSocket.close();
@@ -576,10 +651,40 @@
     }
   }
 
-  function renderGlobalSearchResults() {
-    const q = (document.getElementById('global-search-input').value || '').toLowerCase().trim();
+  function scheduleGlobalFileSearch(rawQuery) {
+    if (state.globalSearchTimer) {
+      clearTimeout(state.globalSearchTimer);
+      state.globalSearchTimer = null;
+    }
+    const trimmed = String(rawQuery || '').trim();
+    if (trimmed.length < 2) {
+      state.globalFileSearchResults = [];
+      return;
+    }
+    state.globalSearchTimer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/files/search?q=${encodeURIComponent(trimmed)}&limit=12`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const payload = await res.json();
+        const curQ = (document.getElementById('global-search-input')?.value || '').trim();
+        if (curQ !== trimmed) return;
+        state.globalFileSearchResults = payload.items || [];
+        renderGlobalSearchResults(true);
+      } catch {
+        // ignore search errors
+      }
+    }, 200);
+  }
+
+  function renderGlobalSearchResults(skipFileFetch = false) {
+    const raw = (document.getElementById('global-search-input').value || '').trim();
+    const q = raw.toLowerCase();
     const results = [];
     const data = state.snapshot;
+
+    if (!skipFileFetch) {
+      scheduleGlobalFileSearch(raw);
+    }
 
     if (data) {
       (data.config?.services || []).forEach((s) => {
@@ -617,11 +722,41 @@
       });
     }
 
+    if (q.length >= 2 && Array.isArray(state.globalFileSearchResults)) {
+      state.globalFileSearchResults.forEach((f) => {
+        results.push({
+          type: f.isDirectory ? 'Ordner' : 'Datei',
+          label: f.name,
+          sub: f.path,
+          action: () => {
+            closeModal('modal-search');
+            state.filesTrashMode = false;
+            if (f.isDirectory) {
+              switchView('files');
+              loadFilesDirectory(f.path);
+            } else if (f.kind === 'text') {
+              switchView('files');
+              if (f.parentDir) loadFilesDirectory(f.parentDir);
+              openTextEditor(f.path);
+            } else if (['image', 'video', 'audio', 'pdf'].includes(f.kind)) {
+              switchView('files');
+              if (f.parentDir) loadFilesDirectory(f.parentDir);
+              openMediaPreview(f.path, f.kind, f.name);
+            } else {
+              switchView('files');
+              loadFilesDirectory(f.parentDir || '/');
+            }
+          }
+        });
+      });
+    }
+
     const navTargets = [
       { label: 'Übersicht & Cockpit', view: 'overview' },
       { label: 'Dateimanager & Papierkorb', view: 'files' },
       { label: 'Festplatten & Blockgeräte', view: 'storage' },
       { label: 'Freigaben (SMB / Samba)', view: 'smb' },
+      { label: 'Host-Prozesse, Ports & Netzwerk / VPN', view: 'host' },
       { label: 'Docker-Container verwalten', view: 'docker' },
       { label: 'Portainer & Compose Stacks', view: 'portainer' },
       { label: 'Homeserver App Store', view: 'appstore' },
@@ -642,7 +777,7 @@
     }
 
     container.innerHTML = '';
-    results.slice(0, 12).forEach((r) => {
+    results.slice(0, 14).forEach((r) => {
       const btn = document.createElement('button');
       btn.className = 'search-result-item';
       btn.innerHTML = `
@@ -1402,6 +1537,7 @@
               <div class="container-name">
                 ${escapeHtml(c.name)}
                 ${c.stackName ? `<span class="tag" style="margin-left:5px;font-size:10px;">Stack: ${escapeHtml(c.stackName)}</span>` : ''}
+                ${c.updateAvailable ? `<button type="button" class="tag tag-warn" data-update-container="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="Neueres Image in der Registry verfügbar — klicken zum Updaten" style="margin-left:5px;font-size:10px;cursor:pointer;">Update verfügbar</button>` : ''}
               </div>
               <div class="container-sub mono">${escapeHtml(c.statusText)}</div>
             </td>
@@ -1424,7 +1560,7 @@
       .join('');
   }
 
-  // ==================== FILES MANAGER & TRASH ====================
+  // ==================== FILES MANAGER, SHARES & TRASH ====================
   async function refreshTrashBadge() {
     try {
       const res = await fetch('/api/files/trash');
@@ -1434,6 +1570,89 @@
       if (badge) badge.textContent = String((data.items || []).length);
     } catch {
       // ignore
+    }
+  }
+
+  async function refreshSharesBadge() {
+    try {
+      const res = await fetch('/api/shares', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      state.sharesList = data.shares || [];
+      const badge = document.getElementById('shares-count-badge');
+      if (badge) badge.textContent = String(state.sharesList.length);
+    } catch {
+      // ignore
+    }
+  }
+
+  function openShareModal(targetPath, targetName) {
+    document.getElementById('share-target-path').value = targetPath;
+    document.getElementById('share-target-name').textContent = targetName || targetPath;
+    document.getElementById('share-ttl').value = '168';
+    document.getElementById('share-password').value = '';
+    document.getElementById('share-result-url').value = '';
+    document.getElementById('share-result-box').classList.add('hidden');
+    openModal('modal-share');
+  }
+
+  async function openSharesListModal() {
+    await refreshSharesBadge();
+    renderSharesListModal();
+    openModal('modal-shares-list');
+  }
+
+  function renderSharesListModal() {
+    const tbody = document.getElementById('shares-list-tbody');
+    if (!tbody) return;
+    const shares = state.sharesList || [];
+    if (shares.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="5" class="muted-text">Keine aktiven Freigabe-Links vorhanden.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = shares
+      .map((s) => {
+        const shareUrl = `${window.location.origin}/s/${s.token}`;
+        const expText = s.expiresAt ? new Date(s.expiresAt).toLocaleString('de-DE') : 'Unbegrenzt';
+        return `
+          <tr>
+            <td>
+              <div style="font-weight:600;">${s.isDirectory ? '📁' : '📄'} ${escapeHtml(s.name)}</div>
+              <div class="mono" style="font-size:11px;color:var(--text-muted);">${escapeHtml(s.targetPath)}</div>
+            </td>
+            <td><span class="tag ${s.hasPassword ? 'tag-ok' : ''}">${s.hasPassword ? 'Passwort' : 'Öffentlich'}</span></td>
+            <td class="mono" style="font-size:11.5px;">${escapeHtml(expText)}</td>
+            <td class="num mono">${Number(s.downloads) || 0}</td>
+            <td class="num">
+              <div class="table-actions-row">
+                <button type="button" class="btn-secondary btn-sm" data-copy-share-link="${escapeHtml(shareUrl)}">Link kopieren</button>
+                <a class="btn-secondary btn-sm" href="${escapeHtml(safeHref(shareUrl))}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">Öffnen ↗</a>
+                <button type="button" class="btn-danger-ghost btn-sm" data-revoke-share="${escapeHtml(s.id)}">Widerrufen</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      })
+      .join('');
+  }
+
+  async function runGlobalFilesSearch(queryText) {
+    const q = String(queryText || '').trim();
+    if (!q) {
+      state.filesGlobalResults = null;
+      renderFilesView();
+      return;
+    }
+    try {
+      const res = await fetch(`/api/files/search?q=${encodeURIComponent(q)}&limit=100`, { cache: 'no-store' });
+      if (!res.ok) throw new Error('Globale Suche fehlgeschlagen');
+      const data = await res.json();
+      if ((document.getElementById('files-search')?.value || '').trim() !== q) return;
+      state.filesGlobalResults = data;
+      renderFilesView();
+    } catch {
+      state.filesGlobalResults = null;
+      renderFilesView();
     }
   }
 
@@ -1543,11 +1762,23 @@
       case 'image': return 'Foto / Bild';
       case 'video': return 'Video';
       case 'audio': return 'Audio';
+      case 'pdf': return 'PDF-Dokument';
       case 'text': return 'Text / Config';
       case 'archive': return 'Archiv / Backup';
       case 'document': return 'Dokument';
       default: return 'Datei';
     }
+  }
+
+  function fileIconEmoji(item) {
+    if (item.isDirectory) return '📁';
+    if (item.kind === 'image') return '🖼️';
+    if (item.kind === 'video') return '🎬';
+    if (item.kind === 'audio') return '🎵';
+    if (item.kind === 'pdf') return '📕';
+    if (item.kind === 'text') return '📝';
+    if (item.kind === 'archive') return '📦';
+    return '📄';
   }
 
   function renderFilesView() {
@@ -1568,8 +1799,13 @@
       `)
     ].join('');
 
+    const rawSearch = (document.getElementById('files-search').value || '').trim();
+    const isGlobalMode = state.filesSearchScope === 'global' && rawSearch.length > 0 && state.filesGlobalResults;
+
     const crumbsEl = document.getElementById('files-breadcrumbs');
-    if (listing.currentPath === '/') {
+    if (isGlobalMode) {
+      crumbsEl.innerHTML = `<button class="crumb-btn" data-open-dir="/">Laufwerke</button><span class="crumb-sep">/</span><span class="tag">Globale Suche: „${escapeHtml(rawSearch)}“ (${state.filesGlobalResults.items.length}${state.filesGlobalResults.truncated ? '+' : ''})</span>`;
+    } else if (listing.currentPath === '/') {
       crumbsEl.innerHTML = `<button class="crumb-btn" data-open-dir="/">/ Laufwerke</button>`;
     } else {
       const parts = listing.currentPath.split('/').filter(Boolean);
@@ -1582,12 +1818,14 @@
       crumbsEl.innerHTML = crumbHtml.join('');
     }
 
-    const canWrite = listing.allowWrite && listing.currentPath !== '/';
-    document.getElementById('btn-files-mkdir').disabled = !canWrite;
-    document.getElementById('btn-files-upload').disabled = !canWrite;
+    const canWrite = isGlobalMode ? state.filesGlobalResults.allowWrite : listing.allowWrite && listing.currentPath !== '/';
+    document.getElementById('btn-files-mkdir').disabled = !listing.allowWrite || listing.currentPath === '/' || isGlobalMode;
+    document.getElementById('btn-files-upload').disabled = !listing.allowWrite || listing.currentPath === '/' || isGlobalMode;
 
-    const search = (document.getElementById('files-search').value || '').toLowerCase();
-    const filtered = (listing.items || []).filter((i) => !search || i.name.toLowerCase().includes(search));
+    const search = rawSearch.toLowerCase();
+    const filtered = isGlobalMode
+      ? state.filesGlobalResults.items || []
+      : (listing.items || []).filter((i) => !search || i.name.toLowerCase().includes(search));
 
     const listContainer = document.getElementById('files-list-container');
     const gridContainer = document.getElementById('files-grid-container');
@@ -1596,16 +1834,16 @@
 
     const tbody = document.getElementById('files-tbody');
     const rows = [];
-    if (listing.parentPath !== null) {
+    if (!isGlobalMode && listing.parentPath !== null) {
       const dropParentAttr = listing.parentPath !== '/' ? `data-drop-dir="${escapeHtml(listing.parentPath)}"` : '';
       rows.push(`<tr ${dropParentAttr}><td></td><td colspan="5"><button class="file-entry-btn mono" data-open-dir="${escapeHtml(listing.parentPath)}">.. (Ebene nach oben)</button></td></tr>`);
     }
 
     if (filtered.length === 0) {
-      rows.push(`<tr><td colspan="6" class="muted-text">Dieser Ordner ist leer.</td></tr>`);
+      rows.push(`<tr><td colspan="6" class="muted-text">${isGlobalMode ? 'Keine passenden Dateien auf den Laufwerken gefunden.' : 'Dieser Ordner ist leer.'}</td></tr>`);
     } else {
       filtered.forEach((item) => {
-        const isPreviewable = item.kind === 'image' || item.kind === 'video' || item.kind === 'audio';
+        const isPreviewable = item.kind === 'image' || item.kind === 'video' || item.kind === 'audio' || item.kind === 'pdf';
         const isText = item.kind === 'text';
         const isArchive = item.kind === 'archive' && (item.name.endsWith('.zip') || item.name.endsWith('.tar.gz') || item.name.endsWith('.tgz') || item.name.endsWith('.tar'));
         const modStr = item.modifiedAt ? new Date(item.modifiedAt).toLocaleString('de-DE') : '—';
@@ -1613,14 +1851,20 @@
           ? `/api/files/zip?path=${encodeURIComponent(item.path)}`
           : `/api/files/raw?path=${encodeURIComponent(item.path)}&download=1`;
         const checked = state.selectedFiles.has(item.path) ? 'checked' : '';
+        const showCheckbox = isGlobalMode || listing.currentPath !== '/';
+        const shareBtn = showCheckbox
+          ? `<button class="btn-secondary btn-sm" data-share-file="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}">Teilen</button>`
+          : '';
 
         const actionBtns = item.isDirectory
           ? `<button class="btn-secondary btn-sm" data-open-dir="${escapeHtml(item.path)}">Öffnen</button>
-             <a class="btn-secondary btn-sm" href="${escapeHtml(dlUrl)}" download style="text-decoration:none;">ZIP laden</a>`
+             <a class="btn-secondary btn-sm" href="${escapeHtml(dlUrl)}" download style="text-decoration:none;">ZIP laden</a>
+             ${shareBtn}`
           : `${isPreviewable ? `<button class="btn-secondary btn-sm" data-preview-file="${escapeHtml(item.path)}" data-preview-kind="${escapeHtml(item.kind)}" data-preview-name="${escapeHtml(item.name)}">Ansehen</button>` : ''}
              ${isText ? `<button class="btn-secondary btn-sm" data-edit-text="${escapeHtml(item.path)}">Editor</button>` : ''}
              ${isArchive && canWrite ? `<button class="btn-secondary btn-sm" data-extract-file="${escapeHtml(item.path)}">Entpacken</button>` : ''}
-             <a class="btn-secondary btn-sm" href="${escapeHtml(dlUrl)}" download style="text-decoration:none;">Download</a>`;
+             <a class="btn-secondary btn-sm" href="${escapeHtml(dlUrl)}" download style="text-decoration:none;">Download</a>
+             ${shareBtn}`;
 
         const writeBtns = canWrite
           ? `<button class="btn-secondary btn-sm" data-move-single="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}">Verschieben</button>
@@ -1633,12 +1877,13 @@
 
         rows.push(`
           <tr ${dragAttr} ${dropAttr}>
-            <td>${listing.currentPath !== '/' ? `<input type="checkbox" class="file-select-cb" data-file-path="${escapeHtml(item.path)}" ${checked} />` : ''}</td>
+            <td>${showCheckbox ? `<input type="checkbox" class="file-select-cb" data-file-path="${escapeHtml(item.path)}" ${checked} />` : ''}</td>
             <td>
               <button class="file-entry-btn" ${item.isDirectory ? `data-open-dir="${escapeHtml(item.path)}"` : isText ? `data-edit-text="${escapeHtml(item.path)}"` : `data-preview-file="${escapeHtml(item.path)}" data-preview-kind="${escapeHtml(item.kind)}" data-preview-name="${escapeHtml(item.name)}"`}>
-                <span>${item.isDirectory ? '📁' : item.kind === 'image' ? '🖼️' : item.kind === 'video' ? '🎬' : item.kind === 'audio' ? '🎵' : item.kind === 'text' ? '📝' : '📄'}</span>
+                <span>${fileIconEmoji(item)}</span>
                 <span>${escapeHtml(item.name)}</span>
               </button>
+              ${isGlobalMode && item.parentDir ? `<div class="mono" style="font-size:10.5px;color:var(--text-muted);padding-left:24px;">${escapeHtml(item.parentDir)}</div>` : ''}
             </td>
             <td><span class="tag">${escapeHtml(kindLabel(item.kind))}</span></td>
             <td class="num mono">${item.isDirectory ? '—' : formatBytesDecimal(item.sizeBytes)}</td>
@@ -1655,25 +1900,21 @@
     }
     tbody.innerHTML = rows.join('');
 
-    // Grid View (with thumbnails, checkboxes, Drag&Drop & quick Move/Download/Trash buttons)
+    // Grid View (with cached /api/files/thumb thumbnails, fallback handling & quick Share/Move/Download/Trash buttons)
     gridContainer.innerHTML = filtered
       .map((item) => {
         const rawUrl = `/api/files/raw?path=${encodeURIComponent(item.path)}`;
+        const thumbUrl = `/api/files/thumb?path=${encodeURIComponent(item.path)}`;
         const dlUrl = item.isDirectory
           ? `/api/files/zip?path=${encodeURIComponent(item.path)}`
           : `/api/files/raw?path=${encodeURIComponent(item.path)}&download=1`;
         const checked = state.selectedFiles.has(item.path) ? 'checked' : '';
+        const showCheckbox = isGlobalMode || listing.currentPath !== '/';
         const thumb = item.isDirectory
           ? '📁'
-          : item.kind === 'image'
-          ? `<img src="${escapeHtml(rawUrl)}" loading="lazy" alt="${escapeHtml(item.name)}" />`
-          : item.kind === 'video'
-          ? '🎬'
-          : item.kind === 'audio'
-          ? '🎵'
-          : item.kind === 'text'
-          ? '📝'
-          : '📄';
+          : item.kind === 'image' || item.kind === 'video'
+          ? `<img src="${escapeHtml(thumbUrl)}" data-thumb-kind="${escapeHtml(item.kind)}" data-fallback-src="${item.kind === 'image' ? escapeHtml(rawUrl) : ''}" loading="lazy" alt="${escapeHtml(item.name)}" />`
+          : fileIconEmoji(item);
         const attr = item.isDirectory
           ? `data-open-dir="${escapeHtml(item.path)}"`
           : item.kind === 'text'
@@ -1685,15 +1926,16 @@
         return `
           <div class="file-grid-card" ${dragAttr} ${dropAttr}>
             <div class="file-grid-top">
-              ${listing.currentPath !== '/' ? `<input type="checkbox" class="file-select-cb" data-file-path="${escapeHtml(item.path)}" ${checked} />` : '<span></span>'}
+              ${showCheckbox ? `<input type="checkbox" class="file-select-cb" data-file-path="${escapeHtml(item.path)}" ${checked} />` : '<span></span>'}
               <span class="mono" style="font-size:10.5px;color:var(--text-muted);">${item.isDirectory ? 'Ordner' : formatBytesDecimal(item.sizeBytes)}</span>
             </div>
             <div class="file-thumb-box" ${attr}>${thumb}</div>
             <div class="file-grid-name" ${attr} title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
             <div class="file-grid-actions">
               <a class="btn-secondary btn-xs" href="${escapeHtml(dlUrl)}" download style="text-decoration:none;" title="${item.isDirectory ? 'Als ZIP herunterladen' : 'Herunterladen'}">${item.isDirectory ? 'ZIP' : 'Laden'}</a>
+              ${showCheckbox ? `<button type="button" class="btn-secondary btn-xs" data-share-file="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}" title="Freigabe-Link erstellen">Teilen</button>` : ''}
               ${canWrite ? `<button type="button" class="btn-secondary btn-xs" data-move-single="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}">Verschieben</button>
-              <button type="button" class="btn-danger-ghost btn-xs" data-delete-file="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}">🗑️ </button>` : ''}
+              <button type="button" class="btn-danger-ghost btn-xs" data-delete-file="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}">🗑️</button>` : ''}
             </div>
           </div>
         `;
@@ -1828,17 +2070,67 @@
     uploadNext();
   }
 
+  function renderVideoStage(filePath, mode = 'native', startSec = 0) {
+    const stage = document.getElementById('media-preview-stage');
+    const transcodeBtn = document.getElementById('btn-preview-transcode');
+    const rawUrl = `/api/files/raw?path=${encodeURIComponent(filePath)}`;
+    const videoUrl = mode === 'transcode'
+      ? `/api/files/video?path=${encodeURIComponent(filePath)}&start=${Math.max(0, Number(startSec) || 0)}`
+      : rawUrl;
+
+    if (transcodeBtn) {
+      transcodeBtn.textContent = mode === 'transcode' ? 'Natives Streaming' : 'Transcode (ffmpeg)';
+    }
+
+    stage.innerHTML = '';
+    const videoEl = document.createElement('video');
+    videoEl.src = videoUrl;
+    videoEl.controls = true;
+    videoEl.autoplay = true;
+    videoEl.playsInline = true;
+    videoEl.addEventListener('error', async () => {
+      if (state.activePreview && state.activePreview.mode !== 'transcode') {
+        state.activePreview.mode = 'transcode';
+        renderVideoStage(filePath, 'transcode', state.activePreview.startSec || 0);
+        return;
+      }
+      let errMsg = 'Video konnte im Browser nicht abgespielt werden. Bitte "Herunterladen" verwenden.';
+      try {
+        const probe = await fetch(videoUrl, { method: 'GET' });
+        if (!probe.ok) {
+          const payload = await probe.json().catch(() => null);
+          if (payload?.error) errMsg = payload.error;
+        }
+      } catch {
+        // ignore probe error
+      }
+      stage.innerHTML = `<p class="muted-text">${escapeHtml(errMsg)}</p>`;
+    });
+    stage.appendChild(videoEl);
+  }
+
   function openMediaPreview(filePath, kind, name) {
     const rawUrl = `/api/files/raw?path=${encodeURIComponent(filePath)}`;
     document.getElementById('modal-preview-title').textContent = name || 'Dateivorschau';
     document.getElementById('modal-preview-path').textContent = filePath;
     document.getElementById('btn-preview-download').href = `${rawUrl}&download=1`;
 
+    const videoControls = document.getElementById('preview-video-controls');
     const stage = document.getElementById('media-preview-stage');
+    videoControls?.classList.add('hidden');
+    state.activePreview = { filePath, kind, name, mode: 'native', startSec: 0 };
+
     if (kind === 'image') {
       stage.innerHTML = `<img src="${escapeHtml(rawUrl)}" alt="${escapeHtml(name)}" />`;
+    } else if (kind === 'pdf') {
+      stage.innerHTML = `<iframe class="pdf-preview-frame" title="PDF Vorschau" src="${escapeHtml(`${rawUrl}&inline=1`)}"></iframe>`;
     } else if (kind === 'video') {
-      stage.innerHTML = `<video src="${escapeHtml(rawUrl)}" controls autoplay></video>`;
+      const lower = String(filePath || '').toLowerCase();
+      const needsTranscode = lower.endsWith('.mkv') || lower.endsWith('.avi') || lower.endsWith('.ts') || lower.endsWith('.mts') || lower.endsWith('.wmv') || lower.endsWith('.flv');
+      state.activePreview.mode = needsTranscode ? 'transcode' : 'native';
+      document.getElementById('preview-video-start').value = '0';
+      videoControls?.classList.remove('hidden');
+      renderVideoStage(filePath, state.activePreview.mode, 0);
     } else if (kind === 'audio') {
       stage.innerHTML = `<audio src="${escapeHtml(rawUrl)}" controls autoplay style="width:100%;max-width:480px;"></audio>`;
     } else {
@@ -1847,15 +2139,153 @@
     openModal('modal-preview');
   }
 
+  function updateEditorLineNumbers() {
+    const area = document.getElementById('text-editor-area');
+    const nums = document.getElementById('editor-line-numbers');
+    if (!area || !nums) return;
+    const count = Math.max(1, area.value.split('\n').length);
+    let out = '';
+    for (let i = 1; i <= count; i += 1) {
+      out += (i === 1 ? '' : '\n') + i;
+    }
+    nums.textContent = out;
+    nums.scrollTop = area.scrollTop;
+  }
+
+  function setEditorStatus(text = '', type = '') {
+    const el = document.getElementById('editor-status-msg');
+    if (!el) return;
+    el.textContent = text;
+    el.className = `editor-status-msg mono${type ? ` ${type}` : ''}`;
+  }
+
+  function validateEditorContent() {
+    const area = document.getElementById('text-editor-area');
+    if (!area) return true;
+    const text = area.value;
+    const ext = state.activeEditorExt;
+
+    if (ext === '.json') {
+      try {
+        JSON.parse(text);
+        setEditorStatus('JSON Syntax OK.', 'ok');
+        return true;
+      } catch (err) {
+        setEditorStatus(`JSON Fehler: ${err.message}`, 'err');
+        return false;
+      }
+    }
+
+    if (ext === '.yml' || ext === '.yaml') {
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i];
+        if (!line.trim() || line.trim().startsWith('#')) continue;
+        if (/^\t+/.test(line)) {
+          setEditorStatus(`YAML Hinweis (Zeile ${i + 1}): Tabs zur Einrückung sind in YAML nicht erlaubt (Leerzeichen verwenden).`, 'err');
+          return false;
+        }
+      }
+      setEditorStatus('YAML Grundprüfung OK (keine Tab-Einrückungen).', 'ok');
+      return true;
+    }
+
+    setEditorStatus(`${text.split('\n').length} Zeilen · ${text.length} Zeichen`, 'ok');
+    return true;
+  }
+
+  function renderSafeMarkdown(md) {
+    const renderInline = (str) => {
+      let safe = escapeHtml(str);
+      safe = safe.replace(/`([^`]+)`/g, '<code>$1</code>');
+      safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      safe = safe.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+      safe = safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+        const href = safeHref(url);
+        return `<a href="${escapeHtml(href)}" ${href !== '#' ? 'target="_blank" rel="noopener noreferrer"' : ''}>${label}</a>`;
+      });
+      return safe;
+    };
+
+    const lines = String(md || '').split('\n');
+    const html = [];
+    let inCode = false;
+    let inList = false;
+
+    const closeList = () => {
+      if (inList) {
+        html.push('</ul>');
+        inList = false;
+      }
+    };
+
+    for (const rawLine of lines) {
+      if (rawLine.trim().startsWith('```')) {
+        closeList();
+        if (!inCode) {
+          inCode = true;
+          html.push('<pre><code>');
+        } else {
+          inCode = false;
+          html.push('</code></pre>');
+        }
+        continue;
+      }
+      if (inCode) {
+        html.push(`${escapeHtml(rawLine)}\n`);
+        continue;
+      }
+
+      const trimmed = rawLine.trim();
+      if (!trimmed) {
+        closeList();
+        continue;
+      }
+      if (/^#{1,3}\s+/.test(trimmed)) {
+        closeList();
+        const level = trimmed.match(/^#+/)[0].length;
+        html.push(`<h${level}>${renderInline(trimmed.slice(level).trim())}</h${level}>`);
+      } else if (/^[-*]\s+/.test(trimmed)) {
+        if (!inList) {
+          inList = true;
+          html.push('<ul>');
+        }
+        html.push(`<li>${renderInline(trimmed.slice(2).trim())}</li>`);
+      } else {
+        closeList();
+        html.push(`<p>${renderInline(trimmed)}</p>`);
+      }
+    }
+    closeList();
+    if (inCode) html.push('</code></pre>');
+    return html.join('');
+  }
+
   async function openTextEditor(filePath) {
     const res = await fetch(`/api/files/text?path=${encodeURIComponent(filePath)}`);
     const data = await res.json();
     if (!res.ok) return alert(data.error || 'Datei konnte nicht geöffnet werden');
     state.activeEditorPath = filePath;
+    const dotIdx = (data.name || '').lastIndexOf('.');
+    state.activeEditorExt = dotIdx >= 0 ? data.name.slice(dotIdx).toLowerCase() : '';
+    state.activeEditorMarkdownPreview = false;
+
     document.getElementById('modal-editor-title').textContent = data.name;
     document.getElementById('modal-editor-path').textContent = filePath;
     document.getElementById('text-editor-area').value = data.content || '';
     document.getElementById('editor-save-msg').textContent = '';
+    document.getElementById('editor-find-input').value = '';
+    setEditorStatus(`${(data.content || '').split('\n').length} Zeilen`);
+
+    const isMd = state.activeEditorExt === '.md' || state.activeEditorExt === '.markdown';
+    const mdBtn = document.getElementById('btn-editor-md-toggle');
+    if (mdBtn) {
+      mdBtn.classList.toggle('hidden', !isMd);
+      mdBtn.textContent = 'Markdown-Vorschau';
+    }
+    document.getElementById('editor-code-wrap')?.classList.remove('hidden');
+    document.getElementById('editor-md-preview')?.classList.add('hidden');
+    updateEditorLineNumbers();
     openModal('modal-text-editor');
   }
 
@@ -2335,6 +2765,277 @@
     }
   }
 
+  // ==================== HOST & NETWORK MONITOR ====================
+  async function loadHostStatus() {
+    try {
+      const res = await fetch('/api/host/status', { cache: 'no-store' });
+      if (!res.ok) return;
+      state.hostData = await res.json();
+      renderHostView();
+    } catch {
+      // ignore transient errors
+    }
+  }
+
+  function renderHostView() {
+    const data = state.hostData;
+    if (!data) return;
+
+    const procBadge = document.getElementById('host-proc-source-badge');
+    if (procBadge) procBadge.textContent = data.procSource || '/proc';
+
+    const vpnGrid = document.getElementById('host-vpn-grid');
+    if (vpnGrid) {
+      const ifaces = data.vpn?.interfaces || [];
+      const containers = data.vpn?.containers || [];
+      if (ifaces.length === 0 && containers.length === 0) {
+        vpnGrid.innerHTML = `<p class="muted-text">Keine aktiven Tailscale-, WireGuard- oder VPN-Tunnel-Interfaces erkannt.</p>`;
+      } else {
+        const ifaceCards = ifaces.map((iface) => `
+          <div class="vpn-iface-card">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <strong class="mono">${escapeHtml(iface.interface)}</strong>
+              <span class="tag ${iface.active ? 'tag-ok' : ''}">${escapeHtml(iface.provider)} · ${iface.active ? 'Aktiv' : 'Down'}</span>
+            </div>
+            <div class="mono" style="font-size:11.5px;color:var(--text-secondary);">
+              ${(iface.addresses || []).length > 0 ? escapeHtml(iface.addresses.join(', ')) : 'Keine IP zugewiesen'}
+            </div>
+            <div class="mono" style="font-size:11px;color:var(--text-muted);">
+              ↓ ${formatBytesDecimal(iface.rxBytes)} · ↑ ${formatBytesDecimal(iface.txBytes)}
+            </div>
+          </div>
+        `);
+        const containerCards = containers.map((c) => `
+          <div class="vpn-iface-card">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <strong>🐳 ${escapeHtml(c.name)}</strong>
+              <span class="tag tag-ok">VPN Container</span>
+            </div>
+            <div class="mono" style="font-size:11.5px;color:var(--text-secondary);">${escapeHtml(c.image)}</div>
+            <div class="mono" style="font-size:11px;color:var(--text-muted);">${escapeHtml(c.statusText)}</div>
+          </div>
+        `);
+        vpnGrid.innerHTML = [...ifaceCards, ...containerCards].join('');
+      }
+    }
+
+    const pingBody = document.getElementById('host-ping-tbody');
+    if (pingBody) {
+      const targets = data.pingTargets || [];
+      pingBody.innerHTML = targets.length === 0
+        ? `<tr><td colspan="5" class="muted-text">Noch keine Überwachungsziele eingetragen.</td></tr>`
+        : targets
+            .map((t) => `
+              <tr>
+                <td><strong>${escapeHtml(t.name)}</strong></td>
+                <td class="mono" style="font-size:11.5px;">${escapeHtml(t.host)}${t.port ? `:${Number(t.port)}` : ''}</td>
+                <td>
+                  <span class="tag ${t.online ? 'tag-ok' : 'tag-crit'}">${t.online ? 'Online' : 'Offline'}</span>
+                  ${t.error ? `<div class="mono" style="font-size:10.5px;color:var(--text-muted);">${escapeHtml(t.error)}</div>` : ''}
+                </td>
+                <td class="num mono">${t.latencyMs !== null && t.latencyMs !== undefined ? `${t.latencyMs} ms` : '—'}</td>
+                <td class="num">
+                  <button type="button" class="btn-danger-ghost btn-xs" data-del-ping="${escapeHtml(t.id)}">Entfernen</button>
+                </td>
+              </tr>
+            `)
+            .join('');
+    }
+
+    const procBody = document.getElementById('host-processes-tbody');
+    if (procBody) {
+      const procs = data.processes || [];
+      procBody.innerHTML = procs.length === 0
+        ? `<tr><td colspan="5" class="muted-text">Keine Host-Prozesse lesbar.</td></tr>`
+        : procs
+            .map((p) => `
+              <tr>
+                <td class="num mono">${Number(p.pid)}</td>
+                <td>
+                  <strong>${escapeHtml(p.name)}</strong>
+                  ${p.command && p.command !== p.name ? `<div class="mono" style="font-size:11px;color:var(--text-muted);max-width:480px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(p.command)}">${escapeHtml(p.command)}</div>` : ''}
+                </td>
+                <td><span class="tag mono">${escapeHtml(p.state || 'S')}</span></td>
+                <td class="num mono">${Number(p.cpuPercent || 0).toFixed(1)}%</td>
+                <td class="num mono">${formatBytesBinary(p.rssBytes)}</td>
+              </tr>
+            `)
+            .join('');
+    }
+
+    const portsBody = document.getElementById('host-ports-tbody');
+    if (portsBody) {
+      const ports = data.ports || [];
+      portsBody.innerHTML = ports.length === 0
+        ? `<tr><td colspan="5" class="muted-text">Keine offenen TCP Listening-Ports erkannt.</td></tr>`
+        : ports
+            .map((p) => `
+              <tr>
+                <td class="num mono"><strong>${Number(p.port)}</strong></td>
+                <td class="mono">${escapeHtml(p.proto || 'tcp')}</td>
+                <td class="mono" style="font-size:11.5px;">${escapeHtml(p.address || '*')}</td>
+                <td><span class="tag">${escapeHtml(p.scope || 'LAN/Alle')}</span></td>
+                <td class="mono" style="font-size:11.5px;color:var(--text-secondary);">${escapeHtml(p.service || '—')}</td>
+              </tr>
+            `)
+            .join('');
+    }
+  }
+
+  // ==================== PUSH NOTIFICATIONS & SECURITY AUDIT ====================
+  async function loadNotificationsState() {
+    try {
+      const res = await fetch('/api/notifications/state', { cache: 'no-store' });
+      if (!res.ok) return;
+      state.notificationsState = await res.json();
+      renderNotificationsPanel();
+    } catch {
+      // ignore
+    }
+  }
+
+  function renderNotificationsPanel() {
+    const data = state.notificationsState;
+    if (!data) return;
+
+    const badge = document.getElementById('notif-status-badge');
+    if (badge) {
+      badge.textContent = data.enabled ? 'Aktiv' : 'Deaktiviert';
+      badge.className = `tag ${data.enabled ? 'tag-ok' : ''}`;
+    }
+
+    document.getElementById('notif-enabled').checked = Boolean(data.enabled);
+    document.getElementById('notif-cooldown').value = Number(data.cooldownMinutes) || 30;
+    const trig = data.triggers || {};
+    document.getElementById('notif-trig-smart').checked = trig.smart !== false;
+    document.getElementById('notif-trig-diskfull').checked = trig.diskFull !== false;
+    document.getElementById('notif-trig-cputemp').checked = trig.cpuTemp !== false;
+    document.getElementById('notif-trig-disktemp').checked = trig.diskTemp !== false;
+    document.getElementById('notif-trig-watchdog').checked = trig.watchdog !== false;
+
+    const ch = data.channels || {};
+    document.getElementById('notif-ntfy-enabled').checked = Boolean(ch.ntfy?.enabled);
+    document.getElementById('notif-ntfy-url').value = ch.ntfy?.url || '';
+    document.getElementById('notif-ntfy-topic').value = ch.ntfy?.topic || '';
+    const ntfyTok = document.getElementById('notif-ntfy-token');
+    if (ntfyTok) {
+      ntfyTok.value = '';
+      ntfyTok.placeholder = ch.ntfy?.hasToken ? 'Token gespeichert (leer lassen zum Behalten)' : 'Token (optional)';
+    }
+
+    document.getElementById('notif-discord-enabled').checked = Boolean(ch.discord?.enabled);
+    const discordUrl = document.getElementById('notif-discord-url');
+    const discordHint = document.getElementById('notif-discord-hint');
+    if (discordUrl) {
+      discordUrl.value = '';
+      discordUrl.placeholder = ch.discord?.hasWebhookUrl ? 'Webhook-URL gespeichert (leer lassen zum Behalten)' : 'https://discord.com/api/webhooks/…';
+    }
+    if (discordHint) {
+      discordHint.textContent = ch.discord?.hasWebhookUrl
+        ? 'Discord Webhook-URL gespeichert. Leer lassen zum Behalten oder neue URL einfügen.'
+        : 'Sendet farbige Embeds bei Server-Ereignissen.';
+    }
+
+    document.getElementById('notif-telegram-enabled').checked = Boolean(ch.telegram?.enabled);
+    const tgTok = document.getElementById('notif-telegram-token');
+    if (tgTok) {
+      tgTok.value = '';
+      tgTok.placeholder = ch.telegram?.hasBotToken ? 'Bot Token gespeichert (leer lassen zum Behalten)' : 'Bot Token (123456:ABC…)';
+    }
+    document.getElementById('notif-telegram-chatid').value = ch.telegram?.chatId || '';
+
+    document.getElementById('notif-webhook-enabled').checked = Boolean(ch.webhook?.enabled);
+    document.getElementById('notif-webhook-url').value = ch.webhook?.url || '';
+    const whSec = document.getElementById('notif-webhook-secret');
+    if (whSec) {
+      whSec.value = '';
+      whSec.placeholder = ch.webhook?.hasSecret ? 'Secret gespeichert (leer lassen zum Behalten)' : 'Bearer Secret (optional)';
+    }
+
+    const histEl = document.getElementById('notif-history-list');
+    if (histEl) {
+      const history = data.history || [];
+      if (history.length === 0) {
+        histEl.innerHTML = `<p class="muted-text">Noch keine Push-Benachrichtigungen gesendet.</p>`;
+      } else {
+        histEl.innerHTML = history
+          .slice(0, 20)
+          .map((h) => {
+            const lvl = h.level === 'crit' || h.level === 'error' ? 'tag-crit' : h.level === 'warn' ? 'tag-warn' : 'tag-ok';
+            const resultsStr = (h.results || []).map((r) => `${r.channel}: ${r.ok ? 'OK' : r.error || 'Fehler'}`).join(' · ');
+            return `
+              <div class="managed-service-row">
+                <div style="min-width:0;">
+                  <div style="font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                    <span class="tag ${lvl}">${escapeHtml(h.source || 'push')}</span>
+                    <span>${escapeHtml(h.title)}</span>
+                  </div>
+                  <div style="font-size:11.5px;color:var(--text-secondary);">${escapeHtml(h.message)}</div>
+                  ${resultsStr ? `<div class="mono" style="font-size:10.5px;color:var(--text-muted);">${escapeHtml(resultsStr)}</div>` : ''}
+                </div>
+                <span class="mono" style="font-size:11px;color:var(--text-muted);flex-shrink:0;">${escapeHtml(new Date(h.ts).toLocaleString('de-DE'))}</span>
+              </div>
+            `;
+          })
+          .join('');
+      }
+    }
+  }
+
+  async function loadAuthMeta() {
+    try {
+      const res = await fetch('/api/auth/meta', { cache: 'no-store' });
+      if (!res.ok) return;
+      const meta = await res.json();
+      const badge = document.getElementById('auth-mode-badge');
+      if (badge) {
+        if (meta.envOverrideActive) {
+          badge.textContent = 'ENV-Passwort aktiv';
+          badge.className = 'tag tag-warn';
+        } else if (meta.authEnabled) {
+          badge.textContent = 'Passwort aktiv';
+          badge.className = 'tag tag-ok';
+        } else {
+          badge.textContent = 'Ohne Passwort';
+          badge.className = 'tag';
+        }
+      }
+      document.getElementById('btn-logout')?.classList.toggle('hidden', !meta.authEnabled);
+    } catch {
+      // ignore
+    }
+  }
+
+  async function loadAuditLog() {
+    try {
+      const res = await fetch('/api/audit?limit=100', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      state.auditEvents = data.events || [];
+      const tbody = document.getElementById('audit-log-tbody');
+      if (!tbody) return;
+      if (state.auditEvents.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="4" class="muted-text">Noch keine Sicherheits- oder Audit-Ereignisse protokolliert.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = state.auditEvents
+        .map((ev) => {
+          const lvl = ev.level === 'error' ? 'tag-crit' : ev.level === 'warn' ? 'tag-warn' : 'tag-ok';
+          return `
+            <tr>
+              <td class="mono" style="font-size:11px;white-space:nowrap;">${escapeHtml(new Date(ev.ts).toLocaleString('de-DE'))}</td>
+              <td class="mono" style="font-size:11px;">${escapeHtml(ev.ip || '—')}</td>
+              <td><span class="tag ${lvl} mono">${escapeHtml(ev.action)}</span></td>
+              <td style="font-size:12px;">${escapeHtml(ev.detail || '')}</td>
+            </tr>
+          `;
+        })
+        .join('');
+    } catch {
+      // ignore
+    }
+  }
+
   // ==================== AUTOMATION, WATCHDOG & WAKE-ON-LAN ====================
   async function loadAutomationState() {
     try {
@@ -2385,6 +3086,8 @@
     document.getElementById('wd-cooldown').value = Number(wd.cooldownSeconds) || 180;
     document.getElementById('wd-unhealthy').checked = wd.restartUnhealthy !== false;
     document.getElementById('wd-exited').checked = Boolean(wd.restartExitedError);
+    const trashDaysEl = document.getElementById('wd-trash-days');
+    if (trashDaysEl) trashDaysEl.value = String(Number(wd.trashAutoCleanDays) || 0);
     renderWatchdogContainerPicker(wd.containerNames || []);
 
     // WoL table
@@ -2416,7 +3119,8 @@
     const typeLabels = {
       'media-scan': 'Mediathek-Scan',
       'storage-analysis': 'Speicher- & Duplikate-Analyse',
-      'container-restart': 'Container-Neustart'
+      'container-restart': 'Container-Neustart',
+      'trash-cleanup': 'Papierkorb-Automatik'
     };
     if (schedBody) {
       schedBody.innerHTML = schedules.length === 0
@@ -2584,12 +3288,13 @@
     // Global Search Ctrl+K
     const openSearch = () => {
       document.getElementById('global-search-input').value = '';
-      renderGlobalSearchResults();
+      state.globalFileSearchResults = [];
+      renderGlobalSearchResults(true);
       openModal('modal-search');
       setTimeout(() => document.getElementById('global-search-input').focus(), 30);
     };
     document.getElementById('btn-global-search').addEventListener('click', openSearch);
-    document.getElementById('global-search-input').addEventListener('input', renderGlobalSearchResults);
+    document.getElementById('global-search-input').addEventListener('input', () => renderGlobalSearchResults(false));
     document.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
@@ -2681,12 +3386,100 @@
       document.getElementById('btn-files-view-list').classList.remove('active');
       renderFilesView();
     });
-    document.getElementById('files-search').addEventListener('input', renderFilesView);
+    document.querySelectorAll('[data-files-search-scope]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.filesSearchScope = btn.dataset.filesSearchScope === 'global' ? 'global' : 'folder';
+        document.querySelectorAll('[data-files-search-scope]').forEach((b) => b.classList.toggle('active', b === btn));
+        const searchInput = document.getElementById('files-search');
+        if (searchInput) {
+          searchInput.placeholder = state.filesSearchScope === 'global'
+            ? 'Alle Laufwerke rekursiv durchsuchen…'
+            : 'In Ordner filtern…';
+          if (state.filesSearchScope === 'global' && searchInput.value.trim()) {
+            runGlobalFilesSearch(searchInput.value);
+          } else {
+            state.filesGlobalResults = null;
+            renderFilesView();
+          }
+        }
+      });
+    });
+    document.getElementById('files-search').addEventListener('input', (e) => {
+      const val = e.target.value || '';
+      if (state.filesGlobalSearchTimer) {
+        clearTimeout(state.filesGlobalSearchTimer);
+        state.filesGlobalSearchTimer = null;
+      }
+      if (state.filesSearchScope === 'global' && !state.filesTrashMode) {
+        if (!val.trim()) {
+          state.filesGlobalResults = null;
+          renderFilesView();
+          return;
+        }
+        state.filesGlobalSearchTimer = setTimeout(() => runGlobalFilesSearch(val), 220);
+      } else {
+        renderFilesView();
+      }
+    });
+    document.getElementById('files-grid-container').addEventListener(
+      'error',
+      (e) => {
+        const img = e.target;
+        if (!img || img.tagName !== 'IMG') return;
+        const fallback = img.dataset.fallbackSrc || '';
+        if (fallback && img.dataset.fallbackTried !== '1') {
+          img.dataset.fallbackTried = '1';
+          img.src = fallback;
+          return;
+        }
+        const emoji = img.dataset.thumbKind === 'video' ? '🎬' : '🖼️';
+        const span = document.createElement('span');
+        span.textContent = emoji;
+        img.replaceWith(span);
+      },
+      true
+    );
     document.getElementById('btn-files-refresh').addEventListener('click', () => {
       if (state.filesTrashMode) loadTrashView();
       else loadFilesDirectory(state.filesPath);
     });
     document.getElementById('btn-files-trash').addEventListener('click', loadTrashView);
+    document.getElementById('btn-files-shares')?.addEventListener('click', openSharesListModal);
+    document.getElementById('form-share')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const targetPath = document.getElementById('share-target-path').value;
+      const ttlHours = Number(document.getElementById('share-ttl').value) || 0;
+      const password = document.getElementById('share-password').value;
+      const res = await fetch('/api/shares', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetPath, ttlHours, password })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || 'Freigabe-Link konnte nicht erstellt werden');
+        return;
+      }
+      const shareUrl = `${window.location.origin}/s/${data.token}`;
+      document.getElementById('share-result-url').value = shareUrl;
+      document.getElementById('share-result-box').classList.remove('hidden');
+      refreshSharesBadge();
+    });
+    document.getElementById('btn-copy-share-url')?.addEventListener('click', async () => {
+      const input = document.getElementById('share-result-url');
+      const btn = document.getElementById('btn-copy-share-url');
+      if (!input?.value) return;
+      try {
+        await navigator.clipboard.writeText(input.value);
+      } catch {
+        input.select();
+        document.execCommand('copy');
+      }
+      if (btn) {
+        btn.textContent = 'Kopiert!';
+        setTimeout(() => { btn.textContent = 'Kopieren'; }, 1800);
+      }
+    });
     document.getElementById('btn-files-mkdir').addEventListener('click', async () => {
       const name = prompt('Name des neuen Ordners:');
       if (!name || !name.trim()) return;
@@ -2947,17 +3740,102 @@
       refreshTrashBadge();
     });
 
+    // Media Preview Video Controls (Transcode & Start Jump)
+    document.getElementById('btn-preview-transcode')?.addEventListener('click', () => {
+      if (!state.activePreview || state.activePreview.kind !== 'video') return;
+      state.activePreview.mode = state.activePreview.mode === 'transcode' ? 'native' : 'transcode';
+      renderVideoStage(state.activePreview.filePath, state.activePreview.mode, state.activePreview.startSec || 0);
+    });
+    document.getElementById('btn-preview-jump')?.addEventListener('click', () => {
+      if (!state.activePreview || state.activePreview.kind !== 'video') return;
+      const startSec = Math.max(0, Number(document.getElementById('preview-video-start')?.value) || 0);
+      state.activePreview.startSec = startSec;
+      state.activePreview.mode = 'transcode';
+      renderVideoStage(state.activePreview.filePath, 'transcode', startSec);
+    });
+
+    // Text / Code / Markdown Editor Pro Controls
+    const editorArea = document.getElementById('text-editor-area');
+    if (editorArea) {
+      editorArea.addEventListener('input', updateEditorLineNumbers);
+      editorArea.addEventListener('scroll', () => {
+        const nums = document.getElementById('editor-line-numbers');
+        if (nums) nums.scrollTop = editorArea.scrollTop;
+      });
+      editorArea.addEventListener('keydown', (e) => {
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          const start = editorArea.selectionStart;
+          const end = editorArea.selectionEnd;
+          editorArea.value = `${editorArea.value.slice(0, start)}  ${editorArea.value.slice(end)}`;
+          editorArea.selectionStart = editorArea.selectionEnd = start + 2;
+          updateEditorLineNumbers();
+        }
+      });
+    }
+    document.getElementById('btn-editor-find-next')?.addEventListener('click', () => {
+      const findInput = document.getElementById('editor-find-input');
+      const term = findInput?.value || '';
+      if (!editorArea || !term) return;
+      const text = editorArea.value;
+      const lowerText = text.toLowerCase();
+      const lowerTerm = term.toLowerCase();
+      const startFrom = editorArea.selectionEnd || 0;
+      let idx = lowerText.indexOf(lowerTerm, startFrom);
+      let wrapped = false;
+      if (idx === -1 && startFrom > 0) {
+        idx = lowerText.indexOf(lowerTerm, 0);
+        wrapped = idx !== -1;
+      }
+      if (idx === -1) {
+        setEditorStatus(`Keine Treffer für „${term}“`, 'err');
+        return;
+      }
+      editorArea.focus();
+      editorArea.setSelectionRange(idx, idx + term.length);
+      const lineBefore = text.slice(0, idx).split('\n').length;
+      setEditorStatus(`Treffer in Zeile ${lineBefore}${wrapped ? ' (von oben neu gesucht)' : ''}`, 'ok');
+    });
+    document.getElementById('btn-editor-validate')?.addEventListener('click', validateEditorContent);
+    document.getElementById('btn-editor-md-toggle')?.addEventListener('click', () => {
+      state.activeEditorMarkdownPreview = !state.activeEditorMarkdownPreview;
+      const btn = document.getElementById('btn-editor-md-toggle');
+      const codeWrap = document.getElementById('editor-code-wrap');
+      const mdPreview = document.getElementById('editor-md-preview');
+      if (state.activeEditorMarkdownPreview) {
+        if (mdPreview && editorArea) mdPreview.innerHTML = renderSafeMarkdown(editorArea.value);
+        codeWrap?.classList.add('hidden');
+        mdPreview?.classList.remove('hidden');
+        if (btn) btn.textContent = 'Quelltext bearbeiten';
+      } else {
+        mdPreview?.classList.add('hidden');
+        codeWrap?.classList.remove('hidden');
+        if (btn) btn.textContent = 'Markdown-Vorschau';
+      }
+    });
+
     // Text Editor Save
     document.getElementById('btn-editor-save').addEventListener('click', async () => {
       if (!state.activeEditorPath) return;
+      const msg = document.getElementById('editor-save-msg');
+      const ext = state.activeEditorExt;
+      if ((ext === '.json' || ext === '.yml' || ext === '.yaml') && !validateEditorContent()) {
+        msg.textContent = 'Syntaxfehler — nicht gespeichert';
+        setTimeout(() => { msg.textContent = ''; }, 3000);
+        return;
+      }
       const content = document.getElementById('text-editor-area').value;
       const res = await fetch(`/api/files/text`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: state.activeEditorPath, content })
       });
-      const msg = document.getElementById('editor-save-msg');
-      msg.textContent = res.ok ? 'Gespeichert!' : 'Fehler beim Speichern';
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        msg.textContent = d.error || 'Fehler beim Speichern';
+      } else {
+        msg.textContent = 'Gespeichert!';
+      }
       setTimeout(() => { msg.textContent = ''; }, 2500);
     });
 
@@ -3348,6 +4226,7 @@
         cooldownSeconds: Number(document.getElementById('wd-cooldown').value) || 180,
         restartUnhealthy: document.getElementById('wd-unhealthy').checked,
         restartExitedError: document.getElementById('wd-exited').checked,
+        trashAutoCleanDays: Number(document.getElementById('wd-trash-days')?.value) || 0,
         containerNames
       };
       const res = await fetch('/api/automation/watchdog', {
@@ -3414,6 +4293,215 @@
     });
 
     document.getElementById('btn-refresh-automation').addEventListener('click', loadAutomationState);
+
+    // Push Notifications
+    document.getElementById('form-notifications')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msgEl = document.getElementById('notif-save-msg');
+      const ntfyToken = document.getElementById('notif-ntfy-token').value.trim();
+      const discordWebhookUrl = document.getElementById('notif-discord-url').value.trim();
+      const tgBotToken = document.getElementById('notif-telegram-token').value.trim();
+      const webhookSecret = document.getElementById('notif-webhook-secret').value.trim();
+
+      const payload = {
+        enabled: document.getElementById('notif-enabled').checked,
+        cooldownMinutes: Number(document.getElementById('notif-cooldown').value) || 30,
+        triggers: {
+          smart: document.getElementById('notif-trig-smart').checked,
+          diskFull: document.getElementById('notif-trig-diskfull').checked,
+          cpuTemp: document.getElementById('notif-trig-cputemp').checked,
+          diskTemp: document.getElementById('notif-trig-disktemp').checked,
+          watchdog: document.getElementById('notif-trig-watchdog').checked
+        },
+        channels: {
+          ntfy: {
+            enabled: document.getElementById('notif-ntfy-enabled').checked,
+            url: document.getElementById('notif-ntfy-url').value.trim() || 'https://ntfy.sh',
+            topic: document.getElementById('notif-ntfy-topic').value.trim(),
+            ...(ntfyToken ? { token: ntfyToken } : {})
+          },
+          discord: {
+            enabled: document.getElementById('notif-discord-enabled').checked,
+            ...(discordWebhookUrl ? { webhookUrl: discordWebhookUrl } : {})
+          },
+          telegram: {
+            enabled: document.getElementById('notif-telegram-enabled').checked,
+            chatId: document.getElementById('notif-telegram-chatid').value.trim(),
+            ...(tgBotToken ? { botToken: tgBotToken } : {})
+          },
+          webhook: {
+            enabled: document.getElementById('notif-webhook-enabled').checked,
+            url: document.getElementById('notif-webhook-url').value.trim(),
+            ...(webhookSecret ? { secret: webhookSecret } : {})
+          }
+        }
+      };
+
+      const res = await fetch('/api/notifications/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (msgEl) msgEl.textContent = `Fehler: ${data.error || 'Speichern fehlgeschlagen'}`;
+        return;
+      }
+      state.notificationsState = data;
+      renderNotificationsPanel();
+      if (msgEl) {
+        msgEl.textContent = 'Benachrichtigungen gespeichert!';
+        setTimeout(() => { msgEl.textContent = ''; }, 2500);
+      }
+    });
+
+    document.getElementById('btn-notif-test')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-notif-test');
+      const msgEl = document.getElementById('notif-save-msg');
+      btn.disabled = true;
+      if (msgEl) msgEl.textContent = 'Sende Test-Nachricht…';
+      try {
+        const res = await fetch('/api/notifications/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          if (msgEl) msgEl.textContent = `Hinweis: ${data.error || 'Versand fehlgeschlagen'}`;
+        } else {
+          if (msgEl) msgEl.textContent = 'Test-Nachricht erfolgreich versendet!';
+        }
+        await loadNotificationsState();
+      } finally {
+        btn.disabled = false;
+        setTimeout(() => { if (msgEl) msgEl.textContent = ''; }, 4000);
+      }
+    });
+
+    // Docker Maintenance (Image Update Check & Safe Prune)
+    document.getElementById('btn-docker-check-updates')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-docker-check-updates');
+      const bar = document.getElementById('docker-maintenance-bar');
+      const msg = document.getElementById('docker-maintenance-msg');
+      btn.disabled = true;
+      btn.textContent = 'Prüfe…';
+      try {
+        const res = await fetch('/api/docker/check-updates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert(data.error || 'Update-Prüfung fehlgeschlagen');
+          return;
+        }
+        if (bar && msg) {
+          bar.classList.remove('hidden');
+          msg.textContent = `Registry-Prüfung abgeschlossen: ${data.checkedImages || 0} Images geprüft · ${data.updatesAvailable || 0} Update(s) verfügbar.`;
+        }
+        const snapRes = await fetch('/api/snapshot');
+        if (snapRes.ok) handleSnapshot(await snapRes.json());
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Updates prüfen';
+      }
+    });
+
+    const loadDockerUsageSummary = async () => {
+      const sumEl = document.getElementById('prune-usage-summary');
+      if (!sumEl) return;
+      sumEl.textContent = 'Lade Docker-Speichernutzung…';
+      try {
+        const res = await fetch('/api/docker/disk-usage', { cache: 'no-store' });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error || 'Nicht abrufbar');
+        if (!d.available) {
+          sumEl.textContent = 'Docker Engine auf diesem Host nicht verfügbar.';
+          return;
+        }
+        sumEl.textContent =
+          `Images: ${d.imagesCount} (${d.unusedImagesCount} ungenutzt, ${formatBytesDecimal(d.imagesReclaimableSize)} frei) · ` +
+          `Build-Cache: ${d.buildCacheCount} (${formatBytesDecimal(d.buildCacheSize)}) · ` +
+          `Volumes: ${d.volumesCount} (${d.danglingVolumesCount} ungenutzt, ${formatBytesDecimal(d.volumesReclaimableSize)}) · ` +
+          `Gesamt einsparbar: ${formatBytesDecimal(d.totalReclaimableSize)}`;
+      } catch (err) {
+        sumEl.textContent = `Fehler: ${err.message}`;
+      }
+    };
+
+    document.getElementById('btn-docker-open-prune')?.addEventListener('click', () => {
+      const msgEl = document.getElementById('prune-msg');
+      if (msgEl) msgEl.textContent = '';
+      openModal('modal-docker-prune');
+      loadDockerUsageSummary();
+    });
+
+    document.getElementById('btn-confirm-docker-prune')?.addEventListener('click', async () => {
+      const images = document.getElementById('prune-opt-images')?.checked !== false;
+      const buildCache = document.getElementById('prune-opt-build')?.checked !== false;
+      const volumes = document.getElementById('prune-opt-volumes')?.checked === true;
+      if (!images && !buildCache && !volumes) return;
+      if (volumes && !confirm('WARNUNG: Ungenutzte anonyme Volumes werden endgültig entfernt. Fortfahren?')) return;
+
+      const btn = document.getElementById('btn-confirm-docker-prune');
+      const msgEl = document.getElementById('prune-msg');
+      btn.disabled = true;
+      btn.textContent = 'Bereinige…';
+      try {
+        const res = await fetch('/api/docker/prune', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ images, buildCache, volumes })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          if (msgEl) msgEl.textContent = `Fehler: ${data.error || 'Bereinigung fehlgeschlagen'}`;
+          return;
+        }
+        if (msgEl) {
+          msgEl.textContent = `Bereinigung fertig: ${formatBytesDecimal(data.reclaimedBytes || 0)} freigegeben (${data.imagesDeleted || 0} Images, ${data.volumesDeleted || 0} Volumes).`;
+        }
+        await loadDockerUsageSummary();
+        const snapRes = await fetch('/api/snapshot');
+        if (snapRes.ok) handleSnapshot(await snapRes.json());
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Jetzt bereinigen';
+      }
+    });
+
+    // Host & Network Monitor
+    document.getElementById('btn-host-refresh')?.addEventListener('click', loadHostStatus);
+    document.getElementById('form-ping-add')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('ping-name').value.trim();
+      const host = document.getElementById('ping-host').value.trim();
+      const portRaw = document.getElementById('ping-port').value.trim();
+      const port = portRaw ? Number(portRaw) : null;
+      if (!name || !host) return;
+      const existing = (state.hostData?.pingTargets || []).map((t) => ({
+        id: t.id,
+        name: t.name,
+        host: t.host,
+        port: t.port || null
+      }));
+      existing.push({ id: `ping-${Date.now()}`, name, host, port });
+      const res = await fetch('/api/host/ping-targets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targets: existing })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || 'Ziel konnte nicht gespeichert werden');
+        return;
+      }
+      state.hostData = data;
+      document.getElementById('form-ping-add').reset();
+      renderHostView();
+    });
 
     // Modals close
     document.querySelectorAll('[data-close-modal]').forEach((btn) => {
@@ -3705,6 +4793,57 @@
       const editTextBtn = e.target.closest('[data-edit-text]');
       if (editTextBtn) {
         openTextEditor(editTextBtn.dataset.editText);
+        return;
+      }
+
+      const shareFileBtn = e.target.closest('[data-share-file]');
+      if (shareFileBtn) {
+        openShareModal(shareFileBtn.dataset.shareFile, shareFileBtn.dataset.fileName);
+        return;
+      }
+
+      const copyShareLinkBtn = e.target.closest('[data-copy-share-link]');
+      if (copyShareLinkBtn) {
+        const url = copyShareLinkBtn.dataset.copyShareLink;
+        try {
+          await navigator.clipboard.writeText(url);
+        } catch {
+          // ignore clipboard fallback in headless
+        }
+        const prev = copyShareLinkBtn.textContent;
+        copyShareLinkBtn.textContent = 'Kopiert!';
+        setTimeout(() => { copyShareLinkBtn.textContent = prev; }, 1600);
+        return;
+      }
+
+      const revokeShareBtn = e.target.closest('[data-revoke-share]');
+      if (revokeShareBtn) {
+        const sid = revokeShareBtn.dataset.revokeShare;
+        const res = await fetch(`/api/shares/${encodeURIComponent(sid)}`, { method: 'DELETE' });
+        if (!res.ok) {
+          alert((await res.json().catch(() => ({}))).error || 'Freigabe konnte nicht widerrufen werden');
+          return;
+        }
+        await refreshSharesBadge();
+        renderSharesListModal();
+        return;
+      }
+
+      const delPingBtn = e.target.closest('[data-del-ping]');
+      if (delPingBtn && state.hostData) {
+        const pid = delPingBtn.dataset.delPing;
+        const nextTargets = (state.hostData.pingTargets || [])
+          .filter((t) => t.id !== pid)
+          .map((t) => ({ id: t.id, name: t.name, host: t.host, port: t.port || null }));
+        const res = await fetch('/api/host/ping-targets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targets: nextTargets })
+        });
+        if (res.ok) {
+          state.hostData = await res.json();
+          renderHostView();
+        }
         return;
       }
 
@@ -4077,6 +5216,35 @@
       setTimeout(() => { msg.textContent = ''; }, 2500);
     });
 
+    document.getElementById('form-password-settings')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const currentPassword = document.getElementById('pw-current').value;
+      const newPassword = document.getElementById('pw-new').value;
+      const confirmPassword = document.getElementById('pw-confirm').value;
+      const msg = document.getElementById('pw-save-msg');
+      if (newPassword !== confirmPassword) {
+        msg.textContent = 'Fehler: Neue Passwörter stimmen nicht überein.';
+        return;
+      }
+      const res = await fetch('/api/auth/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword, newPassword })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        msg.textContent = `Fehler: ${data.error || 'Passwort konnte nicht gespeichert werden'}`;
+        return;
+      }
+      document.getElementById('form-password-settings').reset();
+      msg.textContent = data.message || 'Passwort gespeichert!';
+      setTimeout(() => { msg.textContent = ''; }, 3500);
+      loadAuthMeta();
+      loadAuditLog();
+    });
+
+    document.getElementById('btn-refresh-audit')?.addEventListener('click', loadAuditLog);
+
     document.getElementById('form-login').addEventListener('submit', async (e) => {
       e.preventDefault();
       const password = document.getElementById('login-password').value;
@@ -4094,6 +5262,7 @@
         return;
       }
       document.getElementById('auth-overlay').classList.add('hidden');
+      loadAuthMeta();
       connectStream();
     });
 
@@ -4117,6 +5286,7 @@
   // ==================== BOOT ====================
   async function init() {
     initTheme();
+    initPwa();
     bindEvents();
     localStorage.removeItem('hs_mode');
     const ok = await checkAuthAndStart();

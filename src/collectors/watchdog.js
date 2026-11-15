@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { collectDockerContainers, controlContainer } = require('./docker');
+const { notifyWatchdogEvent } = require('./notifications');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const AUTOMATION_FILE = path.join(DATA_DIR, 'automation.json');
@@ -14,6 +15,8 @@ const DEFAULT_AUTOMATION = {
     restartUnhealthy: true,
     restartExitedError: false
   },
+  trashAutoCleanDays: 0, // 0 = disabled, otherwise 7 / 14 / 30 days
+  lastTrashCleanDate: null,
   schedules: [],
   events: []
 };
@@ -40,6 +43,8 @@ function loadAutomationData() {
         ...DEFAULT_AUTOMATION.watchdog,
         ...(parsed.watchdog && typeof parsed.watchdog === 'object' ? parsed.watchdog : {})
       },
+      trashAutoCleanDays: Math.max(0, Math.min(365, Number(parsed.trashAutoCleanDays) || 0)),
+      lastTrashCleanDate: parsed.lastTrashCleanDate || null,
       schedules: Array.isArray(parsed.schedules) ? parsed.schedules : [],
       events: Array.isArray(parsed.events) ? parsed.events.slice(0, 100) : []
     };
@@ -52,6 +57,8 @@ function saveAutomationData(data) {
   ensureDataDir();
   const payload = {
     watchdog: data.watchdog,
+    trashAutoCleanDays: Math.max(0, Math.min(365, Number(data.trashAutoCleanDays) || 0)),
+    lastTrashCleanDate: data.lastTrashCleanDate || null,
     schedules: data.schedules,
     events: (data.events || []).slice(0, 100)
   };
@@ -87,6 +94,9 @@ function saveWatchdogConfig(patch = {}) {
     restartUnhealthy: patch.restartUnhealthy !== undefined ? Boolean(patch.restartUnhealthy) : data.watchdog.restartUnhealthy,
     restartExitedError: patch.restartExitedError !== undefined ? Boolean(patch.restartExitedError) : data.watchdog.restartExitedError
   };
+  if (patch.trashAutoCleanDays !== undefined) {
+    data.trashAutoCleanDays = Math.max(0, Math.min(365, Number(patch.trashAutoCleanDays) || 0));
+  }
   saveAutomationData(data);
   recordAutomationEvent(
     'watchdog',
@@ -98,7 +108,7 @@ function saveWatchdogConfig(patch = {}) {
 
 function saveSchedules(list = []) {
   const data = loadAutomationData();
-  const allowedTypes = new Set(['container-restart', 'media-scan', 'storage-analysis']);
+  const allowedTypes = new Set(['container-restart', 'media-scan', 'storage-analysis', 'trash-cleanup']);
   const cleaned = [];
   for (const item of Array.isArray(list) ? list : []) {
     if (!item || typeof item !== 'object') continue;
@@ -140,6 +150,12 @@ async function executeScheduleTask(sched, callbacks = {}) {
     recordAutomationEvent('schedule', 'ok', `Zeitplan "${sched.name}": Speicher- & Duplikate-Analyse gestartet.`);
     return;
   }
+  if (sched.type === 'trash-cleanup' && typeof callbacks.onTrashCleanup === 'function') {
+    const days = Number(sched.target) > 0 ? Number(sched.target) : 30;
+    const res = await callbacks.onTrashCleanup(days);
+    recordAutomationEvent('schedule', 'ok', `Zeitplan "${sched.name}": ${res?.removedCount || 0} abgelaufene Papierkorb-Einträge (>${days} Tage) gelöscht.`);
+    return;
+  }
   throw new Error('Aufgabentyp wird aktuell nicht unterstützt.');
 }
 
@@ -164,7 +180,7 @@ async function runTick(callbacks = {}) {
   try {
     const data = loadAutomationData();
 
-    // 1. Watchdog Auto-Heal
+    // 1. Watchdog Auto-Heal + Push Notifications
     if (data.watchdog.enabled) {
       const docker = await collectDockerContainers();
       if (docker.available && docker.allowControl) {
@@ -192,19 +208,16 @@ async function runTick(callbacks = {}) {
           if (nowTs - lastTs < cooldownMs) continue;
 
           lastRestartAt.set(c.name, nowTs);
+          const reasonText = isUnhealthy ? 'Unhealthy' : c.statusText;
           try {
             await controlContainer(c.id, 'restart');
-            recordAutomationEvent(
-              'watchdog',
-              'warn',
-              `Auto-Heal: Container "${c.name}" (${isUnhealthy ? 'Unhealthy' : c.statusText}) wurde automatisch neu gestartet.`
-            );
+            const msg = `Auto-Heal: Container "${c.name}" (${reasonText}) wurde automatisch neu gestartet.`;
+            recordAutomationEvent('watchdog', 'warn', msg);
+            notifyWatchdogEvent(`restart:${c.name}`, `Watchdog Auto-Heal: ${c.name}`, msg, 'warn').catch(() => {});
           } catch (err) {
-            recordAutomationEvent(
-              'watchdog',
-              'error',
-              `Auto-Heal fehlgeschlagen für "${c.name}": ${err.message}`
-            );
+            const msg = `Auto-Heal fehlgeschlagen für "${c.name}": ${err.message}`;
+            recordAutomationEvent('watchdog', 'error', msg);
+            notifyWatchdogEvent(`fail:${c.name}`, `Watchdog Fehler: ${c.name}`, msg, 'crit').catch(() => {});
           }
         }
       }
@@ -233,6 +246,25 @@ async function runTick(callbacks = {}) {
       const fresh = loadAutomationData();
       fresh.schedules = data.schedules;
       saveAutomationData(fresh);
+    }
+
+    // 3. Automatic Trash Auto-Clean once per day if configured
+    if (data.trashAutoCleanDays > 0 && data.lastTrashCleanDate !== todayStr && typeof callbacks.onTrashCleanup === 'function') {
+      try {
+        const res = await callbacks.onTrashCleanup(data.trashAutoCleanDays);
+        const fresh = loadAutomationData();
+        fresh.lastTrashCleanDate = todayStr;
+        saveAutomationData(fresh);
+        if (res?.removedCount > 0) {
+          recordAutomationEvent(
+            'trash',
+            'ok',
+            `Papierkorb-Automatik: ${res.removedCount} Einträge älter als ${data.trashAutoCleanDays} Tage endgültig gelöscht.`
+          );
+        }
+      } catch {
+        // retry next tick
+      }
     }
   } finally {
     checkInFlight = false;

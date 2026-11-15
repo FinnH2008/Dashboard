@@ -1,6 +1,6 @@
 FROM node:24-alpine
 
-# System-Tools für Festplatten, SMART, Archive & Docker Compose Stacks
+# System-Tools für Festplatten, SMART, Archive, Video-Thumbnails & Docker Compose Stacks
 RUN apk add --no-cache \
   util-linux \
   smartmontools \
@@ -9,7 +9,8 @@ RUN apk add --no-cache \
   docker-cli-compose \
   zip \
   unzip \
-  tar
+  tar \
+  ffmpeg
 
 WORKDIR /app
 
