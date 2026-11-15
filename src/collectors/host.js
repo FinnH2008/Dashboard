@@ -8,15 +8,27 @@ const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
 
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
-const PING_FILE = path.join(DATA_DIR, 'ping-targets.json');
 const PROC_DIR = fs.existsSync('/host/proc') ? '/host/proc' : '/proc';
+const SYS_DIR = fs.existsSync('/host/sys') ? '/host/sys' : '/sys';
 
 const prevProcCpu = new Map(); // pid -> { procTime, ts }
 
+function getDataDir() {
+  return process.env.DATA_DIR || path.join(process.cwd(), 'data');
+}
+
+function getPingFile() {
+  return path.join(getDataDir(), 'ping-targets.json');
+}
+
+function getHostCacheFile() {
+  return path.join(getDataDir(), 'host-cache.json');
+}
+
 function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  const dir = getDataDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
 }
 
@@ -52,56 +64,63 @@ async function collectHostProcesses(limit = 15) {
     .filter((e) => e.isDirectory() && /^\d+$/.test(e.name))
     .map((e) => Number(e.name));
 
-  const seenPids = new Set();
+  const seenPids = new Set(pids);
   const processes = [];
 
-  for (const pid of pids) {
-    seenPids.add(pid);
-    try {
-      const statRaw = await fsp.readFile(path.join(PROC_DIR, String(pid), 'stat'), 'utf8');
-      const rparen = statRaw.lastIndexOf(')');
-      if (rparen === -1) continue;
-      const lparen = statRaw.indexOf('(');
-      const comm = statRaw.slice(lparen + 1, rparen);
-      const rest = statRaw.slice(rparen + 2).trim().split(/\s+/);
-      // rest[0] = state (field 3), utime = field 14 (rest[11]), stime = field 15 (rest[12]), rss = field 24 (rest[21])
-      const state = rest[0] || '?';
-      const utime = Number(rest[11]) || 0;
-      const stime = Number(rest[12]) || 0;
-      const rssPages = Number(rest[21]) || 0;
-      const rssBytes = Math.max(0, rssPages * pageSize);
+  const batchSize = 32;
+  for (let i = 0; i < pids.length; i += batchSize) {
+    const chunk = pids.slice(i, i + batchSize);
+    const items = await Promise.all(
+      chunk.map(async (pid) => {
+        try {
+          const statRaw = await fsp.readFile(path.join(PROC_DIR, String(pid), 'stat'), 'utf8');
+          const rparen = statRaw.lastIndexOf(')');
+          if (rparen === -1) return null;
+          const lparen = statRaw.indexOf('(');
+          const comm = statRaw.slice(lparen + 1, rparen);
+          const rest = statRaw.slice(rparen + 2).trim().split(/\s+/);
+          const state = rest[0] || '?';
+          const utime = Number(rest[11]) || 0;
+          const stime = Number(rest[12]) || 0;
+          const rssPages = Number(rest[21]) || 0;
+          const rssBytes = Math.max(0, rssPages * pageSize);
 
-      const procTime = utime + stime;
-      let cpuPercent = 0;
-      const prev = prevProcCpu.get(pid);
-      if (prev && now > prev.ts && procTime >= prev.procTime) {
-        const dtSec = (now - prev.ts) / 1000;
-        const dProcSec = (procTime - prev.procTime) / clkTck;
-        if (dtSec > 0.05) {
-          cpuPercent = Math.min(100 * (os.cpus().length || 1), Math.round((dProcSec / dtSec) * 1000) / 10);
+          const procTime = utime + stime;
+          let cpuPercent = 0;
+          const prev = prevProcCpu.get(pid);
+          if (prev && now > prev.ts && procTime >= prev.procTime) {
+            const dtSec = (now - prev.ts) / 1000;
+            const dProcSec = (procTime - prev.procTime) / clkTck;
+            if (dtSec > 0.05) {
+              cpuPercent = Math.min(100 * (os.cpus().length || 1), Math.round((dProcSec / dtSec) * 1000) / 10);
+            }
+          }
+          prevProcCpu.set(pid, { procTime, ts: now });
+
+          let cmdline = '';
+          try {
+            const cmdRaw = await fsp.readFile(path.join(PROC_DIR, String(pid), 'cmdline'), 'utf8');
+            cmdline = cmdRaw.replace(/\0+/g, ' ').trim();
+          } catch {
+            // ignore
+          }
+
+          return {
+            pid,
+            name: comm,
+            command: (cmdline || comm).slice(0, 140),
+            state,
+            cpuPercent,
+            rssBytes,
+            memPercent: totalRam > 0 ? Math.round((rssBytes / totalRam) * 1000) / 10 : 0
+          };
+        } catch {
+          return null;
         }
-      }
-      prevProcCpu.set(pid, { procTime, ts: now });
-
-      let cmdline = '';
-      try {
-        const cmdRaw = await fsp.readFile(path.join(PROC_DIR, String(pid), 'cmdline'), 'utf8');
-        cmdline = cmdRaw.replace(/\0+/g, ' ').trim();
-      } catch {
-        // ignore
-      }
-
-      processes.push({
-        pid,
-        name: comm,
-        command: (cmdline || comm).slice(0, 140),
-        state,
-        cpuPercent,
-        rssBytes,
-        memPercent: totalRam > 0 ? Math.round((rssBytes / totalRam) * 1000) / 10 : 0
-      });
-    } catch {
-      // process exited or unreadable
+      })
+    );
+    for (const item of items) {
+      if (item) processes.push(item);
     }
   }
 
@@ -138,7 +157,6 @@ function decodeHexIpv6(hex) {
   const groups = [];
   for (let i = 0; i < 32; i += 8) {
     const word = hex.slice(i, i + 8);
-    // little-endian 32-bit words
     groups.push(word.slice(6, 8) + word.slice(4, 6));
     groups.push(word.slice(2, 4) + word.slice(0, 2));
   }
@@ -236,6 +254,7 @@ function guessWellKnownPort(port) {
 }
 
 function collectVpnStatus(dockerContainers = []) {
+  const checkedAt = new Date().toISOString();
   const netDevPath = resolveHostNetPath('dev');
   const devStats = new Map();
   if (fs.existsSync(netDevPath)) {
@@ -253,41 +272,65 @@ function collectVpnStatus(dockerContainers = []) {
     }
   }
 
+  // Also scan host /sys/class/net for tunnel interfaces not visible inside container os.networkInterfaces()
+  const sysNetNames = [];
+  const sysNetOper = new Map();
+  try {
+    const sysNetDir = path.join(SYS_DIR, 'class', 'net');
+    if (fs.existsSync(sysNetDir)) {
+      for (const name of fs.readdirSync(sysNetDir)) {
+        sysNetNames.push(name);
+        try {
+          const oper = fs.readFileSync(path.join(sysNetDir, name, 'operstate'), 'utf8').trim().toLowerCase();
+          sysNetOper.set(name, oper);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   const osIfaces = os.networkInterfaces();
   const vpnInterfaces = [];
-  const candidateNames = new Set([...devStats.keys(), ...Object.keys(osIfaces)]);
+  const candidateNames = new Set([...devStats.keys(), ...sysNetNames, ...Object.keys(osIfaces)]);
 
   for (const name of candidateNames) {
     const lower = name.toLowerCase();
     let provider = null;
     if (lower.startsWith('tailscale')) provider = 'Tailscale';
     else if (lower.startsWith('wg')) provider = 'WireGuard';
-    else if (lower.startsWith('tun') || lower.startsWith('tap')) provider = 'VPN Tunnel';
+    else if (lower.startsWith('tun') || lower.startsWith('tap') || lower.startsWith('utun')) provider = 'VPN Tunnel';
     else if (lower.startsWith('zt')) provider = 'ZeroTier';
     if (!provider) continue;
 
     const addrs = (osIfaces[name] || []).map((a) => `${a.address}`).filter(Boolean);
     const stats = devStats.get(name) || { rxBytes: 0, txBytes: 0 };
+    const oper = sysNetOper.get(name) || '';
+    const active = oper ? oper !== 'down' : true;
     vpnInterfaces.push({
       interface: name,
       provider,
-      active: true,
+      active,
       addresses: addrs,
       rxBytes: stats.rxBytes,
-      txBytes: stats.txBytes
+      txBytes: stats.txBytes,
+      checkedAt
     });
   }
 
-  // Also check if tailscale/wireguard runs inside Docker
   const vpnContainers = dockerContainers
-    .filter((c) => c.state === 'running' && /(tailscale|wireguard|wg-easy|headscale|zerotier)/i.test(`${c.name} ${c.image}`))
+    .filter((c) => c.state === 'running' && /(tailscale|wireguard|wg-easy|headscale|zerotier|gluetun|openvpn)/i.test(`${c.name} ${c.image}`))
     .map((c) => ({
       name: c.name,
       image: c.image,
-      statusText: c.statusText
+      statusText: c.statusText,
+      checkedAt
     }));
 
   return {
+    checkedAt,
     interfaces: vpnInterfaces,
     containers: vpnContainers
   };
@@ -295,17 +338,24 @@ function collectVpnStatus(dockerContainers = []) {
 
 function loadPingTargets() {
   ensureDataDir();
-  if (!fs.existsSync(PING_FILE)) return [];
+  const file = getPingFile();
+  if (!fs.existsSync(file)) return [];
   try {
-    const parsed = JSON.parse(fs.readFileSync(PING_FILE, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
 }
 
+function persistPingTargetsRaw(list) {
+  ensureDataDir();
+  fs.writeFileSync(getPingFile(), JSON.stringify(list, null, 2), 'utf8');
+}
+
 function savePingTargets(list = []) {
   ensureDataDir();
+  const existingById = new Map(loadPingTargets().map((t) => [t.id, t]));
   const clean = [];
   for (const item of Array.isArray(list) ? list : []) {
     if (!item || typeof item !== 'object') continue;
@@ -314,14 +364,27 @@ function savePingTargets(list = []) {
     const portNum = Number(item.port);
     const port = Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535 ? portNum : null;
     if (!host || !/^[a-zA-Z0-9._:-]+$/.test(host)) continue;
+    const id = String(item.id || `ping-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+    const prev = existingById.get(id);
+    const sameEndpoint = prev && prev.host === host && (prev.port ?? null) === port;
     clean.push({
-      id: String(item.id || `ping-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`),
+      id,
       name: name || host,
       host,
-      port
+      port,
+      ...(sameEndpoint
+        ? {
+            online: prev.online,
+            latencyMs: prev.latencyMs ?? null,
+            method: prev.method || null,
+            error: prev.error || null,
+            checkedAt: prev.checkedAt || null,
+            lastOnlineAt: prev.lastOnlineAt || null
+          }
+        : {})
     });
   }
-  fs.writeFileSync(PING_FILE, JSON.stringify(clean, null, 2), 'utf8');
+  persistPingTargetsRaw(clean);
   return clean;
 }
 
@@ -361,22 +424,73 @@ async function icmpPing(host) {
 }
 
 async function checkSinglePingTarget(target) {
+  const checkedAt = new Date().toISOString();
+  let res;
   if (target.port) {
-    const res = await tcpProbe(target.host, target.port);
-    return { ...target, ...res, checkedAt: new Date().toISOString() };
+    res = await tcpProbe(target.host, target.port);
+  } else {
+    const icmp = await icmpPing(target.host);
+    if (icmp.error === 'ping fehlt') {
+      res = await tcpProbe(target.host, 80, 1200);
+    } else {
+      res = icmp;
+    }
   }
-  const icmp = await icmpPing(target.host);
-  if (icmp.error === 'ping fehlt') {
-    const fallback = await tcpProbe(target.host, 80, 1200);
-    return { ...target, ...fallback, checkedAt: new Date().toISOString() };
-  }
-  return { ...target, ...icmp, checkedAt: new Date().toISOString() };
+  return {
+    ...target,
+    ...res,
+    checkedAt,
+    lastOnlineAt: res.online ? checkedAt : target.lastOnlineAt || null
+  };
 }
 
 async function checkAllPingTargets() {
   const targets = loadPingTargets();
   if (targets.length === 0) return [];
-  return await Promise.all(targets.map((t) => checkSinglePingTarget(t)));
+  const checked = await Promise.all(targets.map((t) => checkSinglePingTarget(t)));
+  try {
+    persistPingTargetsRaw(checked);
+  } catch {
+    // ignore fs write error
+  }
+  return checked;
+}
+
+function saveHostCacheSnapshot(payload) {
+  try {
+    ensureDataDir();
+    fs.writeFileSync(
+      getHostCacheFile(),
+      JSON.stringify(
+        {
+          collectedAt: payload.collectedAt,
+          procSource: payload.procSource,
+          sysSource: payload.sysSource,
+          vpn: payload.vpn,
+          processes: payload.processes || [],
+          ports: payload.ports || [],
+          processesCount: (payload.processes || []).length,
+          portsCount: (payload.ports || []).length,
+          pingTargets: payload.pingTargets || []
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  } catch {
+    // ignore fs error
+  }
+}
+
+function loadHostCacheSnapshot() {
+  try {
+    const file = getHostCacheFile();
+    if (!fs.existsSync(file)) return null;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
 }
 
 async function collectHostAndNetworkStatus(dockerContainers = []) {
@@ -386,18 +500,24 @@ async function collectHostAndNetworkStatus(dockerContainers = []) {
   ]);
   const ports = collectListeningPorts(dockerContainers);
   const vpn = collectVpnStatus(dockerContainers);
+  const collectedAt = new Date().toISOString();
 
-  return {
+  const payload = {
+    collectedAt,
     procSource: PROC_DIR,
+    sysSource: SYS_DIR,
     processes,
     ports,
     vpn,
     pingTargets
   };
+  saveHostCacheSnapshot(payload);
+  return payload;
 }
 
 module.exports = {
   collectHostAndNetworkStatus,
   loadPingTargets,
-  savePingTargets
+  savePingTargets,
+  loadHostCacheSnapshot
 };

@@ -1,11 +1,65 @@
 const fs = require('node:fs');
+const path = require('node:path');
 const http = require('node:http');
 
 const DOCKER_SOCKET = process.env.DOCKER_SOCKET || '/var/run/docker.sock';
 const ALLOW_CONTROL = String(process.env.ALLOW_DOCKER_CONTROL || 'false').toLowerCase() === 'true';
 
 const statsCache = new Map();
-const updateCheckCache = new Map(); // image -> { checkedAt, localDigest, remoteDigest, updateAvailable, error }
+const updateCheckCache = new Map(); // image -> { checkedAt, localDigests, remoteDigest, updateAvailable, error }
+let lastUpdateCheckAt = null;
+let dockerCacheLoadedFile = '';
+let lastInventoryFlushTs = 0;
+let lastSavedSummaryKey = '';
+
+function getDockerCacheFile() {
+  const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+  return path.join(dataDir, 'docker-cache.json');
+}
+
+function loadDockerCache() {
+  const file = getDockerCacheFile();
+  if (dockerCacheLoadedFile === file) return;
+  dockerCacheLoadedFile = file;
+  try {
+    if (!fs.existsSync(file)) return;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.lastUpdateCheckAt) lastUpdateCheckAt = parsed.lastUpdateCheckAt;
+      if (parsed.updateChecks && typeof parsed.updateChecks === 'object') {
+        updateCheckCache.clear();
+        for (const [img, info] of Object.entries(parsed.updateChecks)) {
+          if (info && typeof info === 'object') {
+            updateCheckCache.set(img, info);
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore corrupt cache file
+  }
+}
+
+function saveDockerCache(summary = null) {
+  const file = getDockerCacheFile();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const updateChecks = {};
+    for (const [img, info] of updateCheckCache.entries()) {
+      updateChecks[img] = info;
+    }
+    const payload = {
+      savedAt: new Date().toISOString(),
+      lastUpdateCheckAt,
+      summary,
+      updateChecks
+    };
+    fs.writeFileSync(file, JSON.stringify(payload, null, 2), 'utf8');
+    lastInventoryFlushTs = Date.now();
+  } catch {
+    // ignore fs errors
+  }
+}
 
 function dockerRequest(method, apiPath, timeoutMs = 3000, bodyObj = null) {
   return new Promise((resolve, reject) => {
@@ -113,7 +167,14 @@ function formatPorts(ports = []) {
 
 let statsRefreshInFlight = false;
 let lastStatsRefreshTs = 0;
-const STATS_REFRESH_MS = 2200;
+const STATS_REFRESH_MS = 5000;
+
+let containerListCache = { ts: 0, rawList: null };
+const CONTAINER_LIST_CACHE_MS = 2500;
+
+function invalidateDockerListCache() {
+  containerListCache = { ts: 0, rawList: null };
+}
 
 async function fetchContainerStats(id) {
   try {
@@ -141,7 +202,7 @@ function triggerStatsRefresh(runningIds) {
   lastStatsRefreshTs = now;
   (async () => {
     try {
-      const batchSize = 6;
+      const batchSize = 4;
       for (let i = 0; i < runningIds.length; i += batchSize) {
         const batch = runningIds.slice(i, i + batchSize);
         await Promise.all(batch.map((id) => fetchContainerStats(id)));
@@ -153,18 +214,32 @@ function triggerStatsRefresh(runningIds) {
 }
 
 async function collectDockerContainers() {
+  loadDockerCache();
+  const nowIso = new Date().toISOString();
+
   if (!fs.existsSync(DOCKER_SOCKET)) {
     return {
       available: false,
       allowControl: ALLOW_CONTROL,
       reason: 'Docker Socket (/var/run/docker.sock) ist nicht gemountet.',
+      collectedAt: nowIso,
+      statsUpdatedAt: lastStatsRefreshTs ? new Date(lastStatsRefreshTs).toISOString() : null,
+      lastUpdateCheckAt,
       summary: { total: 0, running: 0, stopped: 0, unhealthy: 0 },
       containers: []
     };
   }
 
   try {
-    const rawList = await dockerJson('GET', '/containers/json?all=true', 2500);
+    const now = Date.now();
+    let rawList = null;
+    if (containerListCache.rawList && now - containerListCache.ts < CONTAINER_LIST_CACHE_MS) {
+      rawList = containerListCache.rawList;
+    } else {
+      rawList = await dockerJson('GET', '/containers/json?all=true', 2500);
+      containerListCache = { ts: now, rawList };
+    }
+
     const runningIds = rawList.filter((c) => c.State === 'running').map((c) => c.Id);
     triggerStatsRefresh(runningIds);
 
@@ -224,17 +299,27 @@ async function collectDockerContainers() {
 
     const running = containers.filter((c) => c.state === 'running').length;
     const unhealthy = containers.filter((c) => c.health === 'unhealthy').length;
+    const summary = {
+      total: containers.length,
+      running,
+      stopped: containers.length - running,
+      unhealthy
+    };
+
+    const summaryKey = `${summary.total}:${summary.running}:${summary.unhealthy}`;
+    if (summaryKey !== lastSavedSummaryKey || now - lastInventoryFlushTs >= 60_000) {
+      lastSavedSummaryKey = summaryKey;
+      saveDockerCache(summary);
+    }
 
     return {
       available: true,
       allowControl: ALLOW_CONTROL,
       reason: null,
-      summary: {
-        total: containers.length,
-        running,
-        stopped: containers.length - running,
-        unhealthy
-      },
+      collectedAt: nowIso,
+      statsUpdatedAt: lastStatsRefreshTs ? new Date(lastStatsRefreshTs).toISOString() : null,
+      lastUpdateCheckAt,
+      summary,
       containers
     };
   } catch (err) {
@@ -242,6 +327,9 @@ async function collectDockerContainers() {
       available: false,
       allowControl: ALLOW_CONTROL,
       reason: `Docker API nicht erreichbar: ${err.message}`,
+      collectedAt: nowIso,
+      statsUpdatedAt: lastStatsRefreshTs ? new Date(lastStatsRefreshTs).toISOString() : null,
+      lastUpdateCheckAt,
       summary: { total: 0, running: 0, stopped: 0, unhealthy: 0 },
       containers: []
     };
@@ -289,6 +377,7 @@ async function controlContainer(containerId, action) {
   if (!/^[a-zA-Z0-9_.-]+$/.test(containerId)) throw new Error('Ungültige Container-ID');
   await dockerRequest('POST', `/containers/${containerId}/${action}`, 15000);
   statsCache.delete(containerId);
+  invalidateDockerListCache();
   return { ok: true };
 }
 
@@ -297,6 +386,7 @@ async function removeContainer(containerId, force = true) {
   if (!/^[a-zA-Z0-9_.-]+$/.test(containerId)) throw new Error('Ungültige Container-ID');
   await dockerRequest('DELETE', `/containers/${containerId}?force=${force ? 'true' : 'false'}`, 10000);
   statsCache.delete(containerId);
+  invalidateDockerListCache();
   return { ok: true };
 }
 
@@ -469,6 +559,7 @@ async function createAndStartContainer({
   );
 
   await dockerRequest('POST', `/containers/${created.Id}/start`, 15000);
+  invalidateDockerListCache();
 
   return {
     ok: true,
@@ -509,6 +600,7 @@ async function recreateOrUpdateContainer(containerId, overrideConfig = null) {
 
   updateCheckCache.delete(current.image);
   updateCheckCache.delete(fullImage);
+  saveDockerCache();
 
   return await createAndStartContainer({
     ...next,
@@ -638,6 +730,7 @@ async function checkContainerUpdates() {
   if (!fs.existsSync(DOCKER_SOCKET)) {
     throw new Error('Docker Socket (/var/run/docker.sock) ist nicht gemountet.');
   }
+  loadDockerCache();
   const rawList = await dockerJson('GET', '/containers/json?all=true', 3000);
   const uniqueImages = [...new Set(rawList.map((c) => c.Image).filter(Boolean))];
   const checkedAt = new Date().toISOString();
@@ -668,6 +761,9 @@ async function checkContainerUpdates() {
       }
     })
   );
+
+  lastUpdateCheckAt = checkedAt;
+  saveDockerCache();
 
   const results = rawList.map((c) => {
     const name = (c.Names?.[0] || c.Id.slice(0, 12)).replace(/^\//, '');

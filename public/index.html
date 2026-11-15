@@ -264,12 +264,19 @@
             <div class="panel-header">
               <div>
                 <h2>Echtzeit-Telemetrie</h2>
-                <p class="panel-subtitle">Verlauf der letzten 60 Sekunden</p>
+                <p class="panel-subtitle" id="telemetry-subtitle">Verlauf mit Zeitstempel · Stand: —</p>
               </div>
-              <div class="segmented-sm" role="group">
-                <button class="seg-btn active" data-chart="compute" id="chart-mode-compute">CPU &amp; RAM</button>
-                <button class="seg-btn" data-chart="network" id="chart-mode-network">Netzwerk</button>
-                <button class="seg-btn" data-chart="diskio" id="chart-mode-diskio">Festplatten I/O</button>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                <div class="segmented-sm" role="group" aria-label="Zeitraum">
+                  <button class="seg-btn active" data-chart-range="60">1 Min</button>
+                  <button class="seg-btn" data-chart-range="300">5 Min</button>
+                  <button class="seg-btn" data-chart-range="900">15 Min</button>
+                </div>
+                <div class="segmented-sm" role="group" aria-label="Metrik">
+                  <button class="seg-btn active" data-chart="compute" id="chart-mode-compute">CPU &amp; RAM</button>
+                  <button class="seg-btn" data-chart="network" id="chart-mode-network">Netzwerk</button>
+                  <button class="seg-btn" data-chart="diskio" id="chart-mode-diskio">Festplatten I/O</button>
+                </div>
               </div>
             </div>
             <div class="chart-wrapper">
@@ -307,7 +314,7 @@
             <div class="section-header">
               <div>
                 <h2>Festplatten &amp; Speicher-Pool</h2>
-                <p class="section-subtitle">Alle physischen Laufwerke, Mountpoints, Temperaturen &amp; I/O-Raten</p>
+                <p class="section-subtitle" id="overview-disks-subtitle">Alle physischen Laufwerke, Mountpoints, Temperaturen &amp; I/O-Raten</p>
               </div>
               <div class="section-actions">
                 <span class="io-pill mono" id="total-disk-io">Lesen 0 MB/s · Schreiben 0 MB/s</span>
@@ -486,9 +493,10 @@
         <div class="section-header">
           <div>
             <h2>Festplatten &amp; Blockgeräte</h2>
-            <p class="section-subtitle">Kapazitäten, SMART-Gesundheit, Temperaturen, I/O-Durchsatz sowie Ein-/Aushängen neuer Laufwerke</p>
+            <p class="section-subtitle" id="storage-subtitle">Kapazitäten, SMART-Gesundheit, Temperaturen, I/O-Durchsatz sowie Ein-/Aushängen neuer Laufwerke</p>
           </div>
           <div class="section-actions">
+            <span class="io-pill mono" id="storage-last-updated">Stand: —</span>
             <span class="io-pill mono" id="storage-total-badge">0 / 0 TB</span>
             <button class="btn-secondary btn-sm" data-goto="smb">Freigaben (SMB)</button>
             <button class="btn-primary btn-sm" data-goto="analyzer">Speicher-Analyse</button>
@@ -603,6 +611,7 @@
             <p class="section-subtitle">Echtzeit-Prozesse vom Linux-Host (/proc), lauschende Server-Ports, Tailscale/WireGuard-Status und LAN-Uptime-Monitor</p>
           </div>
           <div class="section-actions">
+            <span class="io-pill mono" id="host-last-checked">Stand: —</span>
             <button class="btn-secondary btn-sm" id="btn-host-refresh">Aktualisieren</button>
           </div>
         </div>
@@ -613,7 +622,7 @@
             <div class="panel-header">
               <div>
                 <h2>VPN &amp; Tunnel-Interfaces</h2>
-                <p class="panel-subtitle">Erkennt Tailscale, WireGuard und Tunnel-Verbindungen automatisch</p>
+                <p class="panel-subtitle" id="host-vpn-subtitle">Erkennt Tailscale, WireGuard und Tunnel-Verbindungen automatisch</p>
               </div>
               <span class="tag mono" id="host-proc-source-badge">/proc</span>
             </div>
@@ -627,7 +636,7 @@
             <div class="panel-header">
               <div>
                 <h2>LAN-Uptime &amp; Latenz-Monitor</h2>
-                <p class="panel-subtitle">Überwacht Router, Pi-hole, Access Points oder NAS-Systeme im Heimnetz</p>
+                <p class="panel-subtitle" id="host-ping-subtitle">Überwacht Router, Pi-hole, Access Points oder NAS-Systeme im Heimnetz</p>
               </div>
             </div>
             <form id="form-ping-add" class="form-row-3" style="gap:8px;">
@@ -646,6 +655,7 @@
                     <th>Ziel</th>
                     <th>Status</th>
                     <th class="num">Latenz</th>
+                    <th>Geprüft</th>
                     <th class="num"></th>
                   </tr>
                 </thead>
@@ -660,7 +670,7 @@
           <div class="panel-header">
             <div>
               <h2>Top 15 Host-Prozesse</h2>
-              <p class="panel-subtitle">Direkt über Linux /proc gelesen — sortiert nach aktueller CPU- und RAM-Last</p>
+              <p class="panel-subtitle" id="host-procs-subtitle">Direkt über Linux /proc gelesen — sortiert nach aktueller CPU- und RAM-Last</p>
             </div>
           </div>
           <div class="table-wrap">
@@ -684,7 +694,7 @@
           <div class="panel-header">
             <div>
               <h2>Lauschende Server-Ports (TCP)</h2>
-              <p class="panel-subtitle">Alle aktiven Listening-Sockets des Hosts inkl. Container-Zuordnung</p>
+              <p class="panel-subtitle" id="host-ports-subtitle">Alle aktiven Listening-Sockets des Hosts inkl. Container-Zuordnung</p>
             </div>
           </div>
           <div class="table-wrap">

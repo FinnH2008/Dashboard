@@ -57,7 +57,60 @@ function getConfiguredMountAllowlist() {
     .filter(Boolean);
 }
 
+let dfCache = { timestamp: 0, data: null };
+const DF_CACHE_TTL_MS = 5000;
+let smartCacheLoadedFile = '';
+
+function getSmartCacheFile() {
+  const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+  return path.join(dataDir, 'storage-smart-cache.json');
+}
+
+function loadSmartCache() {
+  const file = getSmartCacheFile();
+  if (smartCacheLoadedFile === file) return;
+  smartCacheLoadedFile = file;
+  try {
+    if (!fs.existsSync(file)) return;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (parsed && typeof parsed === 'object' && parsed.byDevice) {
+      const ts = parsed.checkedAt ? new Date(parsed.checkedAt).getTime() : Number(parsed.timestamp) || 0;
+      smartCache = {
+        timestamp: Number.isFinite(ts) ? ts : 0,
+        byDevice: parsed.byDevice || {}
+      };
+    }
+  } catch {
+    // ignore corrupt cache
+  }
+}
+
+function saveSmartCache(timestamp, byDevice) {
+  const file = getSmartCacheFile();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify(
+        {
+          checkedAt: new Date(timestamp).toISOString(),
+          timestamp,
+          byDevice
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  } catch {
+    // non-fatal
+  }
+}
+
 async function runDf() {
+  if (dfCache.data && Date.now() - dfCache.timestamp < DF_CACHE_TTL_MS) {
+    return dfCache.data;
+  }
   // -P ensures POSIX single-line output, -k uses 1K blocks (works in Alpine & Debian), -T prints fs type
   const attempts = [
     ['-P', '-k', '-T'],
@@ -93,12 +146,13 @@ async function runDf() {
           entries.push({ filesystem, fsType: 'unknown', totalBytes, usedBytes, availBytes, mountpoint });
         }
       }
+      dfCache = { timestamp: Date.now(), data: entries };
       return entries;
     } catch {
       // try next flag set
     }
   }
-  return [];
+  return dfCache.data || [];
 }
 
 let lsblkCache = { timestamp: 0, data: null };
@@ -194,6 +248,7 @@ function getDiskIoRates() {
 }
 
 function querySmartInfo(blockDevices) {
+  loadSmartCache();
   const now = Date.now();
   if (now - smartCache.timestamp < SMART_CACHE_TTL_MS || smartRefreshInFlight) {
     return smartCache.byDevice;
@@ -205,6 +260,7 @@ function querySmartInfo(blockDevices) {
 
   if (physicalDisks.length === 0) {
     smartCache = { timestamp: now, byDevice: {} };
+    saveSmartCache(now, {});
     return smartCache.byDevice;
   }
 
@@ -231,7 +287,9 @@ function querySmartInfo(blockDevices) {
           }
         })
       );
-      smartCache = { timestamp: Date.now(), byDevice: results };
+      const tsNow = Date.now();
+      smartCache = { timestamp: tsNow, byDevice: results };
+      saveSmartCache(tsNow, results);
     } finally {
       smartRefreshInFlight = false;
     }
@@ -257,6 +315,7 @@ function classifyDiskType(lsblkMatch, fsType, mountpoint) {
 const ALLOW_STORAGE_ADMIN = String(process.env.ALLOW_STORAGE_ADMIN || 'false').toLowerCase() === 'true';
 
 function invalidateStorageCache() {
+  dfCache = { timestamp: 0, data: null };
   lsblkCache = { timestamp: 0, data: null };
 }
 
@@ -460,8 +519,13 @@ async function collectStorageMetrics(customLabels = {}) {
       tran: d.tran || 'sata'
     }));
 
+  const nowIso = new Date().toISOString();
+  const smartCheckedAt = smartCache.timestamp > 0 ? new Date(smartCache.timestamp).toISOString() : null;
+
   const result = {
     allowAdmin: ALLOW_STORAGE_ADMIN,
+    collectedAt: nowIso,
+    smartCheckedAt,
     disks,
     unmountedDevices,
     missingHostMounts,

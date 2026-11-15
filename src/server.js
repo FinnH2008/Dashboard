@@ -98,9 +98,16 @@ const {
   sendTestNotification,
   evaluateSystemNotifications
 } = require('./collectors/notifications');
-const { collectHostAndNetworkStatus, savePingTargets } = require('./collectors/host');
+const { collectHostAndNetworkStatus, savePingTargets, loadHostCacheSnapshot } = require('./collectors/host');
 const { loadConfig, getPublicConfig, saveConfig } = require('./store/services');
 const { logAuditEvent, listAuditEvents } = require('./store/audit');
+const {
+  loadTelemetryHistory,
+  recordTelemetryPoint,
+  flushTelemetryHistorySync,
+  getTelemetryHistory,
+  getLastSampleAgeMs
+} = require('./store/telemetry');
 const {
   listShares,
   createShare,
@@ -212,7 +219,7 @@ async function buildSnapshot(forceMediaScan = false) {
     fetchPortainerStatus(config, docker.containers || [])
   ]);
 
-  return {
+  const snapshot = {
     mode: 'live',
     authEnabled: isAuthEnabled(),
     system,
@@ -225,6 +232,8 @@ async function buildSnapshot(forceMediaScan = false) {
       generatedAt: new Date().toISOString()
     }
   };
+  recordTelemetryPoint(snapshot);
+  return snapshot;
 }
 
 function escapeShareHtml(str) {
@@ -503,6 +512,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ==================== HOST PROCESSES, PORTS, VPN & PING ====================
+    if (req.method === 'GET' && pathname === '/api/host/cache') {
+      return sendJson(res, 200, loadHostCacheSnapshot() || { collectedAt: null, processes: [], ports: [], vpn: { interfaces: [], containers: [] }, pingTargets: [] });
+    }
+
     if (req.method === 'GET' && pathname === '/api/host/status') {
       const docker = await collectDockerContainers();
       const status = await collectHostAndNetworkStatus(docker.containers || []);
@@ -518,6 +531,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ==================== TELEMETRY & SNAPSHOT ====================
+    if (req.method === 'GET' && pathname === '/api/telemetry/history') {
+      const limit = Number(url.searchParams.get('limit')) || 300;
+      const rangeSec = Number(url.searchParams.get('rangeSec')) || 0;
+      return sendJson(res, 200, getTelemetryHistory(limit, rangeSec));
+    }
+
     if (req.method === 'GET' && pathname === '/api/snapshot') {
       const snapshot = await buildSnapshot(false);
       return sendJson(res, 200, snapshot);
@@ -994,9 +1013,16 @@ process.on('unhandledRejection', (reason) => {
   console.error('[Dashboard] Unhandled Rejection:', reason);
 });
 
+let idleTelemetryTimer = null;
+
 function gracefulShutdown(signal) {
   console.log(`[Dashboard] ${signal} empfangen – beende Verbindungen sauber…`);
+  if (idleTelemetryTimer) {
+    clearInterval(idleTelemetryTimer);
+    idleTelemetryTimer = null;
+  }
   stopWatchdogScheduler();
+  flushTelemetryHistorySync();
   for (const res of activeSseResponses) {
     try {
       res.end();
@@ -1015,6 +1041,18 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 server.listen(PORT, HOST, () => {
+  loadTelemetryHistory();
+  idleTelemetryTimer = setInterval(async () => {
+    try {
+      if (getLastSampleAgeMs() >= 9000) {
+        await buildSnapshot(false);
+      }
+    } catch {
+      // ignore background tick errors
+    }
+  }, 10_000);
+  idleTelemetryTimer.unref();
+
   startWatchdogScheduler({
     onMediaScan: () => buildSnapshot(true),
     onStorageAnalysis: () => startStorageAnalysis([], loadConfig().mediaPaths),

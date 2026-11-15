@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const MAX_HISTORY = 60;
+  const MAX_HISTORY = 900;
   const CATEGORY_COLORS = {
     photos: '#d97e38',
     videos: '#4c8cd6',
@@ -53,12 +53,15 @@
     paused: false,
     activeView: 'overview',
     chartMode: 'compute',
+    chartRangeSec: 60,
     dockerFilter: 'all',
     snapshot: null,
     history: [],
+    historyLoaded: false,
     eventSource: null,
     pollTimer: null,
     watchdogTimer: null,
+    hostPollTimer: null,
     lastSnapshotAt: 0,
     transport: 'connecting', // 'connecting' | 'sse' | 'polling'
     activeLogContainerId: null,
@@ -185,6 +188,26 @@
 
   function formatNumber(n) {
     return new Intl.NumberFormat('de-DE').format(Math.round(n || 0));
+  }
+
+  function formatTimeShort(tsOrIso) {
+    if (!tsOrIso) return '—';
+    const d = new Date(tsOrIso);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function formatDateTimeShort(tsOrIso) {
+    if (!tsOrIso) return '—';
+    const d = new Date(tsOrIso);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toLocaleString('de-DE', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
   }
 
   function getProgressColorClass(percent) {
@@ -371,6 +394,13 @@
       .join('');
   }
 
+  function stopHostPolling() {
+    if (state.hostPollTimer) {
+      clearInterval(state.hostPollTimer);
+      state.hostPollTimer = null;
+    }
+  }
+
   // ==================== NAVIGATION & MODALS ====================
   function switchView(viewName) {
     state.activeView = viewName;
@@ -382,6 +412,7 @@
     document.querySelectorAll('.view-section').forEach((sec) => {
       sec.classList.toggle('active', sec.id === `view-${viewName}`);
     });
+    if (viewName !== 'host') stopHostPolling();
     if (viewName === 'overview') {
       requestAnimationFrame(() => {
         drawTelemetryChart();
@@ -398,6 +429,12 @@
       loadSmbStatus();
     } else if (viewName === 'host') {
       loadHostStatus();
+      stopHostPolling();
+      state.hostPollTimer = setInterval(() => {
+        if (!state.paused && state.activeView === 'host') {
+          loadHostStatus();
+        }
+      }, 8000);
     } else if (viewName === 'portainer') {
       loadDeployedStacks();
     } else if (viewName === 'appstore') {
@@ -431,6 +468,32 @@
   }
 
   // ==================== STREAMING & SNAPSHOTS ====================
+  async function loadTelemetryHistory() {
+    try {
+      const res = await fetch('/api/telemetry/history?limit=900', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const loaded = Array.isArray(data.points) ? data.points : [];
+      if (loaded.length > 0) {
+        const merged = [...loaded, ...state.history];
+        merged.sort((a, b) => a.ts - b.ts);
+        const dedup = [];
+        for (const p of merged) {
+          const last = dedup[dedup.length - 1];
+          if (!last || p.ts - last.ts >= 500) {
+            dedup.push(p);
+          }
+        }
+        state.history = dedup.slice(-MAX_HISTORY);
+        state.historyLoaded = true;
+        drawTelemetryChart();
+        renderNetActivityBars();
+      }
+    } catch {
+      // ignore transient error
+    }
+  }
+
   function updateLiveIndicator() {
     const dot = document.getElementById('live-dot');
     const txt = document.getElementById('live-status-text');
@@ -500,7 +563,8 @@
     state.transport = 'connecting';
     updateLiveIndicator();
 
-    // Instant initial snapshot so UI never sits at zeroes waiting for SSE handshake
+    // Load persisted timestamped history + instant snapshot immediately
+    loadTelemetryHistory();
     fetchSnapshotOnce();
 
     const es = new EventSource(`/api/stream`);
@@ -551,8 +615,9 @@
 
     updateLiveIndicator();
 
+    const ts = data.meta?.generatedAt ? new Date(data.meta.generatedAt).getTime() : Date.now();
     const pointNow = {
-      ts: Date.now(),
+      ts: Number.isFinite(ts) ? ts : Date.now(),
       cpu: Number(data.system?.cpu?.usagePercent) || 0,
       ram: Number(data.system?.memory?.usedPercent) || 0,
       netRxMB: (Number(data.system?.network?.rxBytesPerSec) || 0) / (1024 * 1024),
@@ -561,8 +626,11 @@
       diskWriteMB: (Number(data.storage?.totals?.writeBytesPerSec) || 0) / (1024 * 1024)
     };
 
-    state.history.push(pointNow);
-    if (state.history.length > MAX_HISTORY) state.history.shift();
+    const prev = state.history[state.history.length - 1];
+    if (!prev || pointNow.ts - prev.ts >= 500) {
+      state.history.push(pointNow);
+      if (state.history.length > MAX_HISTORY) state.history.shift();
+    }
 
     renderAll();
   }
@@ -920,6 +988,15 @@
     const emerald = getCssVar('--accent-emerald');
     const amber = getCssVar('--accent-amber');
 
+    const rangeSec = Number(state.chartRangeSec) || 60;
+    const rangeMs = rangeSec * 1000;
+    const lastHistoryPoint = state.history.length > 0 ? state.history[state.history.length - 1] : null;
+    const endTs = lastHistoryPoint && Number.isFinite(lastHistoryPoint.ts) ? lastHistoryPoint.ts : Date.now();
+    const startTs = endTs - rangeMs;
+    const visiblePoints = state.history.filter(
+      (p) => p && Number.isFinite(p.ts) && p.ts >= startTs && p.ts <= endTs
+    );
+
     let seriesA = [];
     let seriesB = [];
     let labelA = '';
@@ -930,8 +1007,8 @@
     let maxY = 100;
 
     if (state.chartMode === 'compute') {
-      seriesA = state.history.map((p) => p.cpu);
-      seriesB = state.history.map((p) => p.ram);
+      seriesA = visiblePoints.map((p) => Number(p.cpu) || 0);
+      seriesB = visiblePoints.map((p) => Number(p.ram) || 0);
       labelA = 'CPU-Auslastung';
       labelB = 'RAM-Belegung';
       colorA = blue;
@@ -940,11 +1017,11 @@
       maxY = 100;
     } else {
       const rawA = state.chartMode === 'network'
-        ? state.history.map((p) => p.netRxMB)
-        : state.history.map((p) => p.diskReadMB);
+        ? visiblePoints.map((p) => Number(p.netRxMB) || 0)
+        : visiblePoints.map((p) => Number(p.diskReadMB) || 0);
       const rawB = state.chartMode === 'network'
-        ? state.history.map((p) => p.netTxMB)
-        : state.history.map((p) => p.diskWriteMB);
+        ? visiblePoints.map((p) => Number(p.netTxMB) || 0)
+        : visiblePoints.map((p) => Number(p.diskWriteMB) || 0);
 
       labelA = state.chartMode === 'network' ? 'Empfangen (↓)' : 'Festplatten Lesen';
       labelB = state.chartMode === 'network' ? 'Senden (↑)' : 'Festplatten Schreiben';
@@ -990,18 +1067,25 @@
 
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.fillText('-60s', pad.left, h - 16);
+    ctx.fillText(formatTimeShort(startTs), pad.left, h - 16);
+    if (plotW >= 240) {
+      ctx.textAlign = 'center';
+      ctx.fillText(formatTimeShort(startTs + rangeMs / 2), pad.left + plotW / 2, h - 16);
+    }
     ctx.textAlign = 'right';
-    ctx.fillText(`Jetzt (${unit})`, w - pad.right, h - 16);
+    ctx.fillText(`${formatTimeShort(endTs)} (${unit})`, w - pad.right, h - 16);
+
+    function pointX(ts) {
+      const ratio = rangeMs > 0 ? (ts - startTs) / rangeMs : 1;
+      return pad.left + Math.max(0, Math.min(1, ratio)) * plotW;
+    }
 
     function drawSeries(values, color, fillAlpha) {
       if (values.length === 0) return;
-      const stepX = plotW / (MAX_HISTORY - 1);
-      const startIndex = MAX_HISTORY - values.length;
 
       if (values.length === 1) {
         const clamped = Math.max(0, Math.min(maxY, values[0]));
-        const x = pad.left + startIndex * stepX;
+        const x = pointX(visiblePoints[0].ts);
         const y = pad.top + plotH - (clamped / maxY) * plotH;
         ctx.beginPath();
         ctx.arc(x, y, 3, 0, Math.PI * 2);
@@ -1010,16 +1094,21 @@
         return;
       }
 
+      let firstX = pad.left;
       let lastX = pad.left;
       let lastY = pad.top + plotH;
 
       ctx.beginPath();
       values.forEach((v, idx) => {
-        const x = pad.left + (startIndex + idx) * stepX;
+        const x = pointX(visiblePoints[idx].ts);
         const clamped = Math.max(0, Math.min(maxY, v));
         const y = pad.top + plotH - (clamped / maxY) * plotH;
-        if (idx === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+        if (idx === 0) {
+          firstX = x;
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
         lastX = x;
         lastY = y;
       });
@@ -1029,7 +1118,6 @@
       ctx.lineJoin = 'round';
       ctx.stroke();
 
-      const firstX = pad.left + startIndex * stepX;
       ctx.lineTo(lastX, pad.top + plotH);
       ctx.lineTo(firstX, pad.top + plotH);
       ctx.closePath();
@@ -1059,10 +1147,21 @@
       return `${v.toFixed(1)} MB/s`;
     };
 
-    document.getElementById('telemetry-legend').innerHTML = `
-      <span class="legend-item"><span class="legend-swatch" style="background:${colorA}"></span>${escapeHtml(labelA)}: <strong class="mono">${fmt(lastA)}</strong></span>
-      <span class="legend-item"><span class="legend-swatch" style="background:${colorB}"></span>${escapeHtml(labelB)}: <strong class="mono">${fmt(lastB)}</strong></span>
-    `;
+    const latestVisible = visiblePoints[visiblePoints.length - 1] || lastHistoryPoint;
+    const standStr = latestVisible ? formatTimeShort(latestVisible.ts) : '—';
+    const subEl = document.getElementById('telemetry-subtitle');
+    if (subEl) {
+      subEl.textContent = `${visiblePoints.length} Messpunkte (${Math.round(rangeSec / 60)} Min.) · Gespeichert · Stand: ${standStr}`;
+    }
+
+    const legendEl = document.getElementById('telemetry-legend');
+    if (legendEl) {
+      legendEl.innerHTML = `
+        <span class="legend-item"><span class="legend-swatch" style="background:${colorA}"></span>${escapeHtml(labelA)}: <strong class="mono">${fmt(lastA)}</strong></span>
+        <span class="legend-item"><span class="legend-swatch" style="background:${colorB}"></span>${escapeHtml(labelB)}: <strong class="mono">${fmt(lastB)}</strong></span>
+        <span class="legend-item muted-text mono">Stand: ${escapeHtml(standStr)}</span>
+      `;
+    }
   }
 
   function renderMediaOverview(data) {
@@ -1073,9 +1172,7 @@
     } else if (media.scanning && (!media.totalFiles || media.totalFiles === 0)) {
       subtitle.textContent = `Scanne ${media.scannedPaths.length} Medien-Ordner im Hintergrund…`;
     } else {
-      const standStr = media.scannedAt
-        ? ` · Stand: ${new Date(media.scannedAt).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`
-        : '';
+      const standStr = media.scannedAt ? ` · Stand: ${formatDateTimeShort(media.scannedAt)}` : '';
       subtitle.textContent = `${media.scannedPaths.length} Ordner gescannt${media.truncated ? ' (Teil-Scan)' : ''}${standStr}${media.scanning ? ' · scannt weiter…' : ''}`;
     }
 
@@ -1154,6 +1251,16 @@
     document.getElementById('total-disk-io').textContent =
       `Lesen ${formatRate(storage.totals.readBytesPerSec)} · Schreiben ${formatRate(storage.totals.writeBytesPerSec)}`;
 
+    const standTime = storage.collectedAt ? formatTimeShort(storage.collectedAt) : '—';
+    const smartTime = storage.smartCheckedAt ? formatTimeShort(storage.smartCheckedAt) : '';
+
+    if (containerId === 'overview-disks-grid') {
+      const ovSub = document.getElementById('overview-disks-subtitle');
+      if (ovSub) {
+        ovSub.textContent = `${storage.diskCount || 0} Laufwerke · Stand: ${standTime}${smartTime ? ` · SMART: ${smartTime}` : ''}`;
+      }
+    }
+
     if (!storage.disks || storage.disks.length === 0) {
       grid.innerHTML = `<div class="card disk-card"><p class="muted-text">Keine Festplatten erkannt.</p></div>`;
       return;
@@ -1213,7 +1320,10 @@
                 <span class="disk-stat-v">${escapeHtml(pohDisplay)}</span>
               </div>
             </div>
-            ${unmountBtn ? `<div style="display:flex;justify-content:flex-end;">${unmountBtn}</div>` : ''}
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <span class="mono" style="font-size:10.5px;color:var(--text-muted);">Stand: ${escapeHtml(standTime)}${smartTime ? ` · SMART: ${escapeHtml(smartTime)}` : ''}</span>
+              ${unmountBtn}
+            </div>
           </article>
         `;
       })
@@ -1264,6 +1374,18 @@
     const barEl = document.getElementById('storage-segmented-bar');
     const legendEl = document.getElementById('storage-segmented-legend');
     const totalCap = storage.totals.totalBytes || 1;
+
+    const lastUpdatedEl = document.getElementById('storage-last-updated');
+    if (lastUpdatedEl) {
+      lastUpdatedEl.textContent = `Stand: ${storage.collectedAt ? formatDateTimeShort(storage.collectedAt) : '—'}`;
+    }
+    const storageSubEl = document.getElementById('storage-subtitle');
+    if (storageSubEl) {
+      const smartInfo = storage.smartCheckedAt
+        ? ` · Letzter SMART-Check: ${formatDateTimeShort(storage.smartCheckedAt)}`
+        : '';
+      storageSubEl.textContent = `${storage.diskCount || 0} gemountete Laufwerke · Kapazitäten, SMART & I/O${smartInfo}`;
+    }
 
     document.getElementById('storage-total-badge').textContent =
       `${formatBytesDecimal(storage.totals.usedBytes)} / ${formatBytesDecimal(storage.totals.totalBytes)}`;
@@ -1533,8 +1655,13 @@
     }
 
     const summaryText = `${docker.summary.running} aktiv · ${docker.summary.stopped} gestoppt`;
-    overviewSubtitle.textContent = summaryText;
-    fullSubtitle.textContent = `${summaryText}${docker.allowControl ? ' · Portainer & Vollsteuerung aktiv' : ' · Nur-Lese-Modus'}`;
+    const standOverview = docker.collectedAt ? ` · Stand: ${formatTimeShort(docker.collectedAt)}` : '';
+    const standFull = docker.collectedAt ? ` · Stand: ${formatDateTimeShort(docker.collectedAt)}` : '';
+    const updCheckStr = docker.lastUpdateCheckAt
+      ? ` · Letzter Update-Check: ${formatDateTimeShort(docker.lastUpdateCheckAt)}`
+      : ' · Update-Check: ausstehend';
+    overviewSubtitle.textContent = `${summaryText}${standOverview}`;
+    fullSubtitle.textContent = `${summaryText}${docker.allowControl ? ' · Portainer & Vollsteuerung aktiv' : ' · Nur-Lese-Modus'}${standFull}${updCheckStr}`;
 
     const searchOverview = (document.getElementById('overview-docker-search').value || '').toLowerCase();
     const overviewContainers = docker.containers
@@ -1608,13 +1735,16 @@
         const portainerLink = portainerBase && portainerBase !== '#' && c.fullId
           ? `<a class="btn-secondary btn-sm" href="${escapeHtml(safeHref(`${portainerBase}/#!/${endpointId}/docker/containers/${c.fullId}`))}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;" title="In Portainer öffnen">Portainer ↗</a>`
           : '';
+        const updTitle = c.updateCheckedAt
+          ? `Neueres Image in der Registry verfügbar (geprüft: ${formatDateTimeShort(c.updateCheckedAt)}) — klicken zum Updaten`
+          : 'Neueres Image in der Registry verfügbar — klicken zum Updaten';
         return `
           <tr>
             <td>
               <div class="container-name">
                 ${escapeHtml(c.name)}
                 ${c.stackName ? `<span class="tag" style="margin-left:5px;font-size:10px;">Stack: ${escapeHtml(c.stackName)}</span>` : ''}
-                ${c.updateAvailable ? `<button type="button" class="tag tag-warn" data-update-container="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="Neueres Image in der Registry verfügbar — klicken zum Updaten" style="margin-left:5px;font-size:10px;cursor:pointer;">Update verfügbar</button>` : ''}
+                ${c.updateAvailable ? `<button type="button" class="tag tag-warn" data-update-container="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="${escapeHtml(updTitle)}" style="margin-left:5px;font-size:10px;cursor:pointer;">Update verfügbar</button>` : ''}
               </div>
               <div class="container-sub mono">${escapeHtml(c.statusText)}</div>
             </td>
@@ -2844,6 +2974,21 @@
 
   // ==================== HOST & NETWORK MONITOR ====================
   async function loadHostStatus() {
+    if (!state.hostData) {
+      try {
+        const cacheRes = await fetch('/api/host/cache', { cache: 'no-store' });
+        if (cacheRes.ok) {
+          const cached = await cacheRes.json();
+          if (cached && cached.collectedAt && !state.hostData) {
+            state.hostData = cached;
+            renderHostView();
+          }
+        }
+      } catch {
+        // ignore cache read error
+      }
+    }
+
     try {
       const res = await fetch('/api/host/status', { cache: 'no-store' });
       if (!res.ok) return;
@@ -2858,8 +3003,19 @@
     const data = state.hostData;
     if (!data) return;
 
+    const lastCheckedBadge = document.getElementById('host-last-checked');
+    if (lastCheckedBadge) {
+      lastCheckedBadge.textContent = `Stand: ${data.collectedAt ? formatDateTimeShort(data.collectedAt) : '—'}`;
+    }
+
     const procBadge = document.getElementById('host-proc-source-badge');
     if (procBadge) procBadge.textContent = data.procSource || '/proc';
+
+    const vpnSub = document.getElementById('host-vpn-subtitle');
+    if (vpnSub) {
+      const vpnTs = data.vpn?.checkedAt || data.collectedAt;
+      vpnSub.textContent = `Erkennt Tailscale, WireGuard und Tunnel-Verbindungen automatisch${vpnTs ? ` · Stand: ${formatTimeShort(vpnTs)}` : ''}`;
+    }
 
     const vpnGrid = document.getElementById('host-vpn-grid');
     if (vpnGrid) {
@@ -2896,11 +3052,20 @@
       }
     }
 
+    const targets = data.pingTargets || [];
+    const pingSub = document.getElementById('host-ping-subtitle');
+    if (pingSub) {
+      const onlineCount = targets.filter((t) => t.online).length;
+      const latestPingAt = targets.reduce((acc, t) => (!acc || (t.checkedAt && t.checkedAt > acc) ? t.checkedAt : acc), data.collectedAt || null);
+      pingSub.textContent = targets.length > 0
+        ? `${onlineCount}/${targets.length} online${latestPingAt ? ` · Stand: ${formatTimeShort(latestPingAt)}` : ''}`
+        : `Überwacht Router, Pi-hole, Access Points oder NAS-Systeme${data.collectedAt ? ` · Stand: ${formatTimeShort(data.collectedAt)}` : ''}`;
+    }
+
     const pingBody = document.getElementById('host-ping-tbody');
     if (pingBody) {
-      const targets = data.pingTargets || [];
       pingBody.innerHTML = targets.length === 0
-        ? `<tr><td colspan="5" class="muted-text">Noch keine Überwachungsziele eingetragen.</td></tr>`
+        ? `<tr><td colspan="6" class="muted-text">Noch keine Überwachungsziele eingetragen.</td></tr>`
         : targets
             .map((t) => `
               <tr>
@@ -2911,12 +3076,21 @@
                   ${t.error ? `<div class="mono" style="font-size:10.5px;color:var(--text-muted);">${escapeHtml(t.error)}</div>` : ''}
                 </td>
                 <td class="num mono">${t.latencyMs !== null && t.latencyMs !== undefined ? `${t.latencyMs} ms` : '—'}</td>
+                <td class="mono" style="font-size:11px;white-space:nowrap;">
+                  <div>${t.checkedAt ? escapeHtml(formatDateTimeShort(t.checkedAt)) : '—'}</div>
+                  ${!t.online && t.lastOnlineAt ? `<div style="font-size:10px;color:var(--text-muted);">Zuletzt online: ${escapeHtml(formatDateTimeShort(t.lastOnlineAt))}</div>` : ''}
+                </td>
                 <td class="num">
                   <button type="button" class="btn-danger-ghost btn-xs" data-del-ping="${escapeHtml(t.id)}">Entfernen</button>
                 </td>
               </tr>
             `)
             .join('');
+    }
+
+    const procsSub = document.getElementById('host-procs-subtitle');
+    if (procsSub) {
+      procsSub.textContent = `Direkt über Linux ${data.procSource || '/proc'} gelesen${data.collectedAt ? ` · Stand: ${formatTimeShort(data.collectedAt)}` : ''}`;
     }
 
     const procBody = document.getElementById('host-processes-tbody');
@@ -2940,9 +3114,14 @@
             .join('');
     }
 
+    const ports = data.ports || [];
+    const portsSub = document.getElementById('host-ports-subtitle');
+    if (portsSub) {
+      portsSub.textContent = `${ports.length} aktive Listening-Sockets${data.collectedAt ? ` · Stand: ${formatTimeShort(data.collectedAt)}` : ''}`;
+    }
+
     const portsBody = document.getElementById('host-ports-tbody');
     if (portsBody) {
-      const ports = data.ports || [];
       portsBody.innerHTML = ports.length === 0
         ? `<tr><td colspan="5" class="muted-text">Keine offenen TCP Listening-Ports erkannt.</td></tr>`
         : ports
@@ -3406,11 +3585,18 @@
       if (!state.paused) fetchSnapshotOnce();
     });
 
-    // Telemetry Chart Tabs
+    // Telemetry Chart Tabs & Timeframe Selector
     document.querySelectorAll('[data-chart]').forEach((btn) => {
       btn.addEventListener('click', () => {
         state.chartMode = btn.dataset.chart;
         document.querySelectorAll('[data-chart]').forEach((b) => b.classList.toggle('active', b === btn));
+        drawTelemetryChart();
+      });
+    });
+    document.querySelectorAll('[data-chart-range]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.chartRangeSec = Number(btn.dataset.chartRange) || 60;
+        document.querySelectorAll('[data-chart-range]').forEach((b) => b.classList.toggle('active', b === btn));
         drawTelemetryChart();
       });
     });
