@@ -460,7 +460,7 @@ async function collectStorageMetrics(customLabels = {}) {
       tran: d.tran || 'sata'
     }));
 
-  return {
+  const result = {
     allowAdmin: ALLOW_STORAGE_ADMIN,
     disks,
     unmountedDevices,
@@ -470,10 +470,97 @@ async function collectStorageMetrics(customLabels = {}) {
     healthyCount: disks.filter((d) => d.healthy && d.usedPercent < 90).length,
     warningCount: disks.filter((d) => !d.healthy || d.usedPercent >= 90).length
   };
+
+  recordStorageHistory(result, false);
+  return result;
+}
+
+const STORAGE_HISTORY_INTERVAL_MS = 15 * 60 * 1000;
+const MAX_STORAGE_HISTORY = 360;
+let lastStorageHistoryWriteTs = 0;
+
+function getStorageHistoryFile() {
+  const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+  return path.join(dataDir, 'storage-history.json');
+}
+
+function readStorageHistoryRaw() {
+  const file = getStorageHistoryFile();
+  try {
+    if (!fs.existsSync(file)) return [];
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function recordStorageHistory(storageData, force = false) {
+  if (!storageData || !Array.isArray(storageData.disks) || storageData.disks.length === 0) {
+    return null;
+  }
+  const now = Date.now();
+  if (!force && now - lastStorageHistoryWriteTs < STORAGE_HISTORY_INTERVAL_MS) {
+    return null;
+  }
+
+  const history = readStorageHistoryRaw();
+  const latest = history[0];
+  if (!force && latest?.ts) {
+    const lastTs = new Date(latest.ts).getTime();
+    const diffMs = now - (Number.isFinite(lastTs) ? lastTs : 0);
+    const totalDelta = Math.abs((storageData.totals?.usedBytes || 0) - (latest.usedBytes || 0));
+    if (diffMs < STORAGE_HISTORY_INTERVAL_MS && totalDelta < 500 * 1024 * 1024) {
+      lastStorageHistoryWriteTs = lastTs;
+      return null;
+    }
+  }
+
+  const entry = {
+    ts: new Date(now).toISOString(),
+    totalBytes: Number(storageData.totals?.totalBytes) || 0,
+    usedBytes: Number(storageData.totals?.usedBytes) || 0,
+    availableBytes: Number(storageData.totals?.availableBytes) || 0,
+    usedPercent: Number(storageData.totals?.usedPercent) || 0,
+    disks: storageData.disks.map((d) => ({
+      mountpoint: d.mountpoint,
+      label: d.label || d.mountpoint,
+      filesystem: d.filesystem,
+      totalBytes: Number(d.totalBytes) || 0,
+      usedBytes: Number(d.usedBytes) || 0,
+      availableBytes: Number(d.availableBytes) || 0,
+      usedPercent: Number(d.usedPercent) || 0
+    }))
+  };
+
+  history.unshift(entry);
+  if (history.length > MAX_STORAGE_HISTORY) history.length = MAX_STORAGE_HISTORY;
+  lastStorageHistoryWriteTs = now;
+
+  try {
+    const file = getStorageHistoryFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(history, null, 2), 'utf8');
+  } catch {
+    // non-fatal if storage unavailable
+  }
+  return entry;
+}
+
+function getStorageHistory(limit = 60) {
+  const history = readStorageHistoryRaw();
+  const max = Math.max(1, Math.min(MAX_STORAGE_HISTORY, Number(limit) || 60));
+  return {
+    lastRecordedAt: history[0]?.ts || null,
+    count: history.length,
+    entries: history.slice(0, max)
+  };
 }
 
 module.exports = {
   collectStorageMetrics,
+  getStorageHistory,
+  recordStorageHistory,
   mountHostDevice,
   unmountHostPath,
   formatHostDevice

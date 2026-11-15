@@ -512,6 +512,28 @@
 
         <div class="disks-grid detailed" id="storage-disks-grid"></div>
 
+        <article class="card panel-card" id="storage-history-card">
+          <div class="panel-header">
+            <div>
+              <h2>Belegungs-Verlauf pro Festplatte (mit Timestamp)</h2>
+              <p class="panel-subtitle" id="storage-history-meta">Automatische Speicherung alle 15 Min. &amp; bei Änderungen</p>
+            </div>
+            <button type="button" class="btn-secondary btn-sm" id="btn-storage-snapshot">Snapshot jetzt speichern</button>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Zeitstempel</th>
+                  <th class="num">Gesamt belegt</th>
+                  <th>Belegung pro Laufwerk</th>
+                </tr>
+              </thead>
+              <tbody id="storage-history-tbody"></tbody>
+            </table>
+          </div>
+        </article>
+
         <section class="section-block" id="unmounted-section">
           <div class="section-header">
             <div>

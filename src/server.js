@@ -22,6 +22,8 @@ const { attachTerminalUpgrade } = require('./terminal');
 const { collectSystemMetrics, triggerHostPower } = require('./collectors/system');
 const {
   collectStorageMetrics,
+  getStorageHistory,
+  recordStorageHistory,
   mountHostDevice,
   unmountHostPath,
   formatHostDevice
@@ -799,6 +801,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ==================== STORAGE ADMIN & SMB ====================
+    if (req.method === 'GET' && pathname === '/api/storage/history') {
+      const limit = Number(url.searchParams.get('limit')) || 60;
+      return sendJson(res, 200, getStorageHistory(limit));
+    }
+
+    if (req.method === 'POST' && pathname === '/api/storage/history') {
+      const cfg = loadConfig();
+      const storage = await collectStorageMetrics(cfg.diskLabels);
+      recordStorageHistory(storage, true);
+      return sendJson(res, 200, getStorageHistory(60));
+    }
+
     if (req.method === 'POST' && pathname === '/api/storage/mount') {
       const body = await readJsonBody(req);
       const resMount = await mountHostDevice(body.devPath, body.mountPoint, body.persistFstab !== false);

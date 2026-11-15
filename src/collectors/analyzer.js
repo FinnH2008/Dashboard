@@ -61,6 +61,72 @@ function computeFullSha256(filePath) {
   });
 }
 
+let loadedAnalyzerFile = '';
+
+function getAnalyzerCacheFile() {
+  const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+  return path.join(dataDir, 'analyzer-cache.json');
+}
+
+function savePersistedAnalysis() {
+  if (analyzerState.phase !== 'done') return;
+  const file = getAnalyzerCacheFile();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify(
+        {
+          phase: analyzerState.phase,
+          scannedFiles: analyzerState.scannedFiles,
+          scannedDirs: analyzerState.scannedDirs,
+          scannedBytes: analyzerState.scannedBytes,
+          hashedFiles: analyzerState.hashedFiles,
+          startedAt: analyzerState.startedAt,
+          finishedAt: analyzerState.finishedAt,
+          roots: analyzerState.roots,
+          summary: analyzerState.summary,
+          largestFiles: analyzerState.largestFiles,
+          largestDirs: analyzerState.largestDirs,
+          duplicateGroups: analyzerState.duplicateGroups
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  } catch {
+    // non-fatal
+  }
+}
+
+function loadPersistedAnalysisOnce() {
+  if (analyzerState.running || analyzerState.phase !== 'idle') return;
+  const file = getAnalyzerCacheFile();
+  if (loadedAnalyzerFile === file) return;
+  loadedAnalyzerFile = file;
+  try {
+    if (!fs.existsSync(file)) return;
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (saved && saved.phase === 'done' && saved.finishedAt) {
+      analyzerState.phase = 'done';
+      analyzerState.scannedFiles = Number(saved.scannedFiles) || 0;
+      analyzerState.scannedDirs = Number(saved.scannedDirs) || 0;
+      analyzerState.scannedBytes = Number(saved.scannedBytes) || 0;
+      analyzerState.hashedFiles = Number(saved.hashedFiles) || 0;
+      analyzerState.startedAt = saved.startedAt || saved.finishedAt;
+      analyzerState.finishedAt = saved.finishedAt;
+      analyzerState.roots = Array.isArray(saved.roots) ? saved.roots : [];
+      analyzerState.summary = saved.summary || analyzerState.summary;
+      analyzerState.largestFiles = Array.isArray(saved.largestFiles) ? saved.largestFiles : [];
+      analyzerState.largestDirs = Array.isArray(saved.largestDirs) ? saved.largestDirs : [];
+      analyzerState.duplicateGroups = Array.isArray(saved.duplicateGroups) ? saved.duplicateGroups : [];
+    }
+  } catch {
+    // ignore corrupt cache
+  }
+}
+
 async function runAnalysisJob(roots) {
   const sizeBuckets = new Map();
   const topFiles = [];
@@ -227,6 +293,7 @@ async function runAnalysisJob(roots) {
     };
     analyzerState.phase = 'done';
     analyzerState.finishedAt = new Date().toISOString();
+    savePersistedAnalysis();
   } catch (err) {
     analyzerState.phase = 'error';
     analyzerState.error = err.message;
@@ -271,6 +338,7 @@ function startStorageAnalysis(requestedPaths = [], configMediaPaths = []) {
 }
 
 function getAnalysisStatus() {
+  loadPersistedAnalysisOnce();
   return {
     running: analyzerState.running,
     phase: analyzerState.phase,

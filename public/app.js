@@ -392,6 +392,8 @@
       else loadFilesDirectory(state.filesPath);
       refreshTrashBadge();
       refreshSharesBadge();
+    } else if (viewName === 'storage') {
+      loadStorageHistory();
     } else if (viewName === 'smb') {
       loadSmbStatus();
     } else if (viewName === 'host') {
@@ -1071,7 +1073,10 @@
     } else if (media.scanning && (!media.totalFiles || media.totalFiles === 0)) {
       subtitle.textContent = `Scanne ${media.scannedPaths.length} Medien-Ordner im Hintergrund…`;
     } else {
-      subtitle.textContent = `${media.scannedPaths.length} Ordner gescannt${media.truncated ? ' (Teil-Scan)' : ''}${media.scanning ? ' · scannt weiter…' : ''}`;
+      const standStr = media.scannedAt
+        ? ` · Stand: ${new Date(media.scannedAt).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`
+        : '';
+      subtitle.textContent = `${media.scannedPaths.length} Ordner gescannt${media.truncated ? ' (Teil-Scan)' : ''}${standStr}${media.scanning ? ' · scannt weiter…' : ''}`;
     }
 
     document.getElementById('donut-total-size').textContent = formatBytesDecimal(media.totalBytes);
@@ -1281,6 +1286,48 @@
             <span class="legend-swatch" style="background:${color}"></span>
             ${escapeHtml(disk.label)} <strong class="mono">${formatBytesDecimal(disk.usedBytes)}</strong>
           </span>
+        `;
+      })
+      .join('');
+  }
+
+  async function loadStorageHistory() {
+    try {
+      const res = await fetch('/api/storage/history?limit=40', { cache: 'no-store' });
+      if (!res.ok) return;
+      renderStorageHistory(await res.json());
+    } catch {
+      // ignore transient error
+    }
+  }
+
+  function renderStorageHistory(historyData) {
+    const tbody = document.getElementById('storage-history-tbody');
+    const meta = document.getElementById('storage-history-meta');
+    if (!tbody) return;
+    const entries = historyData?.entries || [];
+    if (meta) {
+      meta.textContent = historyData?.lastRecordedAt
+        ? `${entries.length} gespeicherte Messpunkte · Letzter Stand: ${new Date(historyData.lastRecordedAt).toLocaleString('de-DE')}`
+        : 'Noch keine Messpunkte gespeichert';
+    }
+    if (entries.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="3" class="muted-text">Noch keine gespeicherten Snapshots vorhanden.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = entries
+      .slice(0, 25)
+      .map((entry) => {
+        const tsStr = entry.ts ? new Date(entry.ts).toLocaleString('de-DE') : '—';
+        const diskSummary = (entry.disks || [])
+          .map((d) => `${escapeHtml(d.label || d.mountpoint)}: ${formatBytesDecimal(d.usedBytes)} / ${formatBytesDecimal(d.totalBytes)} (${Number(d.usedPercent || 0).toFixed(1)}%)`)
+          .join(' · ');
+        return `
+          <tr>
+            <td class="mono" style="white-space:nowrap;">${escapeHtml(tsStr)}</td>
+            <td class="num mono">${formatBytesDecimal(entry.usedBytes)} / ${formatBytesDecimal(entry.totalBytes)} (${Number(entry.usedPercent || 0).toFixed(1)}%)</td>
+            <td style="font-size:12px;color:var(--text-secondary);">${diskSummary || '—'}</td>
+          </tr>
         `;
       })
       .join('');
@@ -4406,6 +4453,19 @@
       } finally {
         btn.disabled = false;
         setTimeout(() => { if (msgEl) msgEl.textContent = ''; }, 4000);
+      }
+    });
+
+    document.getElementById('btn-storage-snapshot')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-storage-snapshot');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/storage/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        if (res.ok) {
+          renderStorageHistory(await res.json());
+        }
+      } finally {
+        btn.disabled = false;
       }
     });
 

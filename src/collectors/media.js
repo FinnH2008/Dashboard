@@ -43,7 +43,7 @@ const IGNORED_NAMES = new Set([
   'node_modules'
 ]);
 
-const CACHE_TTL_MS = 10 * 60 * 1000;
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_MAX_DURATION_MS = 120_000; // 2 minutes background scan
 const DEFAULT_MAX_FILES = 1_000_000;
 const DEFAULT_MAX_DEPTH = 24;
@@ -57,6 +57,49 @@ let mediaCache = {
 };
 
 let mediaScanPromise = null;
+let loadedCacheFile = '';
+
+function getMediaCacheFile() {
+  const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+  return path.join(dataDir, 'media-cache.json');
+}
+
+function loadPersistedMediaCache(expectedKey) {
+  const file = getMediaCacheFile();
+  if (loadedCacheFile === file && mediaCache.data && mediaCache.key === expectedKey) {
+    return;
+  }
+  loadedCacheFile = file;
+  try {
+    if (!fs.existsSync(file)) return;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (parsed && parsed.key === expectedKey && parsed.data && parsed.data.scannedAt) {
+      const scannedTs = new Date(parsed.data.scannedAt).getTime();
+      mediaCache = {
+        key: parsed.key,
+        timestamp: Number.isFinite(scannedTs) && scannedTs > 0 ? scannedTs : Number(parsed.timestamp) || 0,
+        scanning: false,
+        data: { ...parsed.data, scanning: false }
+      };
+    }
+  } catch {
+    // ignore corrupt cache file
+  }
+}
+
+function savePersistedMediaCache(key, data) {
+  const file = getMediaCacheFile();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ key, timestamp: Date.now(), data }, null, 2),
+      'utf8'
+    );
+  } catch {
+    // non-fatal if read-only
+  }
+}
 
 function classifyExtension(ext) {
   if (PHOTO_EXT.has(ext)) return 'photos';
@@ -358,7 +401,9 @@ async function runMediaScan(paths, cacheKey) {
   };
 
   const pushInterim = () => {
-    // Only overwrite interim progress for the active cacheKey
+    if (state.totalFiles <= 0 && mediaCache.data && mediaCache.key === cacheKey && mediaCache.data.totalFiles > 0) {
+      return;
+    }
     mediaCache = {
       key: cacheKey,
       timestamp: Date.now(),
@@ -374,6 +419,7 @@ async function runMediaScan(paths, cacheKey) {
 
   const result = buildResultFromState(paths, state, false);
   mediaCache = { key: cacheKey, timestamp: Date.now(), scanning: false, data: result };
+  savePersistedMediaCache(cacheKey, result);
   return result;
 }
 
@@ -388,6 +434,7 @@ async function collectMediaStats(configMediaPaths = [], forceRefresh = false) {
     return emptyResult;
   }
 
+  loadPersistedMediaCache(cacheKey);
   const hasValidCache = Boolean(mediaCache.data && mediaCache.key === cacheKey);
   const isFresh = hasValidCache && now - mediaCache.timestamp < CACHE_TTL_MS && !mediaCache.scanning;
 
