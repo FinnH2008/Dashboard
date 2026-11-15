@@ -1044,7 +1044,7 @@
     } else if (media.scanning && (!media.totalFiles || media.totalFiles === 0)) {
       subtitle.textContent = `Scanne ${media.scannedPaths.length} Medien-Ordner im Hintergrund…`;
     } else {
-      subtitle.textContent = `${media.scannedPaths.length} Ordner gescannt${media.truncated ? ' (Teil-Scan)' : ''}${media.scanning ? ' · aktualisiere…' : ''}`;
+      subtitle.textContent = `${media.scannedPaths.length} Ordner gescannt${media.truncated ? ' (Teil-Scan)' : ''}${media.scanning ? ' · scannt weiter…' : ''}`;
     }
 
     document.getElementById('donut-total-size').textContent = formatBytesDecimal(media.totalBytes);
@@ -1053,12 +1053,15 @@
     document.getElementById('overview-media-categories').innerHTML = media.categories
       .map((cat) => {
         const color = CATEGORY_COLORS[cat.id] || CATEGORY_COLORS.other;
+        const topExts = Array.isArray(cat.topExtensions) && cat.topExtensions.length > 0
+          ? ` · ${cat.topExtensions.slice(0, 3).map((e) => `${e.ext} (${formatBytesDecimal(e.bytes)})`).join(', ')}`
+          : '';
         return `
           <div class="media-cat-row">
             <span class="media-cat-dot" style="background:${color}"></span>
             <div class="media-cat-info">
               <div class="media-cat-name">${escapeHtml(cat.label)}</div>
-              <div class="media-cat-count mono">${formatNumber(cat.count)} Dateien · ${cat.percent.toFixed(1)}%</div>
+              <div class="media-cat-count mono">${formatNumber(cat.count)} Dateien · ${cat.percent.toFixed(1)}%${escapeHtml(topExts)}</div>
             </div>
             <div class="media-cat-size mono">${formatBytesDecimal(cat.bytes)}</div>
           </div>
