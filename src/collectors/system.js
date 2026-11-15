@@ -194,9 +194,24 @@ function getTemperatures() {
   };
 }
 
+let lastNetResult = null;
+let lastNetComputedAt = 0;
+
+function resolveHostNetDevPath() {
+  if (PROC_DIR === '/host/proc') {
+    const pid1NetDev = '/host/proc/1/net/dev';
+    if (fs.existsSync(pid1NetDev)) return pid1NetDev;
+  }
+  return path.join(PROC_DIR, 'net', 'dev');
+}
+
 function getNetworkThroughput() {
-  const raw = readTextSafe(path.join(PROC_DIR, 'net', 'dev'));
   const now = Date.now();
+  if (lastNetResult && now - lastNetComputedAt < 350) {
+    return lastNetResult;
+  }
+
+  const raw = readTextSafe(resolveHostNetDevPath());
   const interfaces = [];
 
   if (raw) {
@@ -205,7 +220,20 @@ function getNetworkThroughput() {
       if (!line.includes(':')) continue;
       const [namePart, statsPart] = line.split(':');
       const name = namePart.trim();
-      if (!name || name === 'lo' || name.startsWith('veth') || name.startsWith('br-') || name.startsWith('docker')) {
+      if (
+        !name ||
+        name === 'lo' ||
+        name.startsWith('veth') ||
+        name.startsWith('br-') ||
+        name.startsWith('docker') ||
+        name.startsWith('vnet') ||
+        name.startsWith('virbr') ||
+        name.startsWith('dummy') ||
+        name.startsWith('ifb') ||
+        name === 'sit0' ||
+        name === 'tunl0' ||
+        name === 'ip6tnl0'
+      ) {
         continue;
       }
       const cols = statsPart.trim().split(/\s+/).map((n) => Number(n) || 0);
@@ -228,7 +256,7 @@ function getNetworkThroughput() {
       const prev = prevMap.get(iface.name);
       let rxRate = 0;
       let txRate = 0;
-      if (prev && dtSec > 0.1) {
+      if (prev && dtSec > 0.05) {
         rxRate = Math.max(0, (iface.rxBytes - prev.rxBytes) / dtSec);
         txRate = Math.max(0, (iface.txBytes - prev.txBytes) / dtSec);
       }
@@ -254,13 +282,21 @@ function getNetworkThroughput() {
     }
   }
 
-  prevNetSnapshot = { timestamp: now, interfaces };
+  perInterface.sort((a, b) => {
+    const rateDiff = b.rxBytesPerSec + b.txBytesPerSec - (a.rxBytesPerSec + a.txBytesPerSec);
+    if (rateDiff !== 0) return rateDiff;
+    return b.totalRxBytes + b.totalTxBytes - (a.totalRxBytes + a.totalTxBytes);
+  });
 
-  return {
+  prevNetSnapshot = { timestamp: now, interfaces };
+  lastNetComputedAt = now;
+  lastNetResult = {
     rxBytesPerSec: Math.round(rxBytesPerSec),
     txBytesPerSec: Math.round(txBytesPerSec),
     interfaces: perInterface
   };
+
+  return lastNetResult;
 }
 
 function getOsRelease() {

@@ -145,8 +145,16 @@ function decodeHexIpv6(hex) {
   return groups.join(':');
 }
 
+function resolveHostNetPath(filename) {
+  if (PROC_DIR === '/host/proc') {
+    const pid1Path = `/host/proc/1/net/${filename}`;
+    if (fs.existsSync(pid1Path)) return pid1Path;
+  }
+  return path.join(PROC_DIR, 'net', filename);
+}
+
 function parseProcNetTcp(filename, protoLabel, isV6) {
-  const filePath = path.join(PROC_DIR, 'net', filename);
+  const filePath = resolveHostNetPath(filename);
   if (!fs.existsSync(filePath)) return [];
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
@@ -228,7 +236,7 @@ function guessWellKnownPort(port) {
 }
 
 function collectVpnStatus(dockerContainers = []) {
-  const netDevPath = path.join(PROC_DIR, 'net', 'dev');
+  const netDevPath = resolveHostNetPath('dev');
   const devStats = new Map();
   if (fs.existsSync(netDevPath)) {
     try {

@@ -882,7 +882,7 @@
   function renderNetActivityBars() {
     const container = document.getElementById('net-activity-bars');
     const slice = state.history.slice(-16);
-    const maxVal = Math.max(1, ...slice.map((p) => p.netRxMB + p.netTxMB));
+    const maxVal = Math.max(0.05, ...slice.map((p) => p.netRxMB + p.netTxMB));
     const cells = [];
     for (let i = 0; i < 16; i += 1) {
       const point = slice[slice.length - 16 + i];
@@ -906,7 +906,7 @@
 
     const w = rect.width;
     const h = rect.height;
-    const pad = { top: 12, right: 12, bottom: 22, left: 42 };
+    const pad = { top: 12, right: 12, bottom: 22, left: 46 };
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
@@ -936,24 +936,36 @@
       colorB = emerald;
       unit = '%';
       maxY = 100;
-    } else if (state.chartMode === 'network') {
-      seriesA = state.history.map((p) => p.netRxMB);
-      seriesB = state.history.map((p) => p.netTxMB);
-      labelA = 'Empfangen (↓)';
-      labelB = 'Senden (↑)';
-      colorA = blue;
-      colorB = amber;
-      unit = 'MB/s';
-      maxY = Math.max(10, Math.ceil(Math.max(...seriesA, ...seriesB, 5) * 1.25));
     } else {
-      seriesA = state.history.map((p) => p.diskReadMB);
-      seriesB = state.history.map((p) => p.diskWriteMB);
-      labelA = 'Festplatten Lesen';
-      labelB = 'Festplatten Schreiben';
-      colorA = emerald;
+      const rawA = state.chartMode === 'network'
+        ? state.history.map((p) => p.netRxMB)
+        : state.history.map((p) => p.diskReadMB);
+      const rawB = state.chartMode === 'network'
+        ? state.history.map((p) => p.netTxMB)
+        : state.history.map((p) => p.diskWriteMB);
+
+      labelA = state.chartMode === 'network' ? 'Empfangen (↓)' : 'Festplatten Lesen';
+      labelB = state.chartMode === 'network' ? 'Senden (↑)' : 'Festplatten Schreiben';
+      colorA = state.chartMode === 'network' ? blue : emerald;
       colorB = amber;
-      unit = 'MB/s';
-      maxY = Math.max(10, Math.ceil(Math.max(...seriesA, ...seriesB, 5) * 1.25));
+
+      const peakMB = Math.max(...rawA, ...rawB, 0);
+      if (peakMB < 0.9) {
+        seriesA = rawA.map((v) => v * 1024);
+        seriesB = rawB.map((v) => v * 1024);
+        unit = 'KB/s';
+        const peakKB = peakMB * 1024 * 1.25;
+        if (peakKB <= 100) maxY = 100;
+        else if (peakKB <= 200) maxY = 200;
+        else if (peakKB <= 400) maxY = 400;
+        else if (peakKB <= 800) maxY = 800;
+        else maxY = 1000;
+      } else {
+        seriesA = rawA;
+        seriesB = rawB;
+        unit = 'MB/s';
+        maxY = Math.max(4, Math.ceil((peakMB * 1.25) / 4) * 4);
+      }
     }
 
     ctx.strokeStyle = gridColor;
@@ -981,9 +993,20 @@
     ctx.fillText(`Jetzt (${unit})`, w - pad.right, h - 16);
 
     function drawSeries(values, color, fillAlpha) {
-      if (values.length < 2) return;
+      if (values.length === 0) return;
       const stepX = plotW / (MAX_HISTORY - 1);
       const startIndex = MAX_HISTORY - values.length;
+
+      if (values.length === 1) {
+        const clamped = Math.max(0, Math.min(maxY, values[0]));
+        const x = pad.left + startIndex * stepX;
+        const y = pad.top + plotH - (clamped / maxY) * plotH;
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+        return;
+      }
 
       let lastX = pad.left;
       let lastY = pad.top + plotH;
@@ -1028,7 +1051,11 @@
 
     const lastA = seriesA[seriesA.length - 1] ?? 0;
     const lastB = seriesB[seriesB.length - 1] ?? 0;
-    const fmt = (v) => (unit === '%' ? `${v.toFixed(1)}%` : `${v.toFixed(1)} MB/s`);
+    const fmt = (v) => {
+      if (unit === '%') return `${v.toFixed(1)}%`;
+      if (unit === 'KB/s') return `${v >= 100 ? Math.round(v) : v.toFixed(1)} KB/s`;
+      return `${v.toFixed(1)} MB/s`;
+    };
 
     document.getElementById('telemetry-legend').innerHTML = `
       <span class="legend-item"><span class="legend-swatch" style="background:${colorA}"></span>${escapeHtml(labelA)}: <strong class="mono">${fmt(lastA)}</strong></span>

@@ -320,7 +320,11 @@ function guessDefaultLabel(mountpoint) {
 }
 
 function detectHostMntMounts() {
-  const mountsFile = fs.existsSync('/host/proc/mounts') ? '/host/proc/mounts' : '/proc/mounts';
+  const mountsFile = fs.existsSync('/host/proc/1/mounts')
+    ? '/host/proc/1/mounts'
+    : fs.existsSync('/host/proc/mounts')
+    ? '/host/proc/mounts'
+    : '/proc/mounts';
   try {
     const raw = fs.readFileSync(mountsFile, 'utf8');
     const found = [];
