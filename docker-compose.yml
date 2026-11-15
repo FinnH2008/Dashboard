@@ -53,6 +53,9 @@ services:
     # pid: host
     # volumes:
     #   - /etc/fstab:/host/etc/fstab
+    #
+    # Optional für Layer-2 Wake-on-LAN (Broadcast ins lokale LAN statt Docker-Bridge):
+    # network_mode: host
 
 volumes:
   dashboard_data:

@@ -12,12 +12,34 @@
   const DISK_PALETTE = ['#d97e38', '#4c8cd6', '#3ca374', '#349696', '#c46445', '#808690'];
   const VIEW_TITLES = {
     overview: 'Systemübersicht',
-    files: 'Dateimanager & Medien',
-    storage: 'Festplatten & SMB-Freigaben',
-    docker: 'Docker-Container & Portainer',
-    appstore: 'App Store & Compose Stacks',
-    settings: 'System- & Dashboard-Einstellungen'
+    files: 'Dateimanager & Papierkorb',
+    storage: 'Festplatten & Blockgeräte',
+    smb: 'Freigaben (SMB / Samba)',
+    docker: 'Docker-Container',
+    portainer: 'Portainer & Compose Stacks',
+    appstore: 'Homeserver App Store',
+    analyzer: 'Speicher-Analyse & Duplikate',
+    automation: 'Automation, Watchdog & Wake-on-LAN',
+    settings: 'System- & Design-Einstellungen'
   };
+  const THEMES = ['studio-dark', 'studio-light', 'oled', 'slate', 'indigo'];
+  const THEME_LABELS = {
+    dark: 'Studio Dark',
+    'studio-dark': 'Studio Dark',
+    light: 'Studio Light',
+    'studio-light': 'Studio Light',
+    oled: 'OLED Black',
+    slate: 'Nordic Slate',
+    indigo: 'Midnight Indigo'
+  };
+  const DEFAULT_OVERVIEW_WIDGETS = [
+    { id: 'kpis', label: 'System-KPIs (CPU, RAM, Netz, Pool)', visible: true },
+    { id: 'telemetry', label: 'Echtzeit-Telemetrie (Verlauf)', visible: true },
+    { id: 'media', label: 'Medien-Verteilung', visible: true },
+    { id: 'disks', label: 'Festplatten-Kurzstatus', visible: true },
+    { id: 'services', label: 'Homeserver-Apps (Schnellzugriff)', visible: true },
+    { id: 'docker', label: 'Container-Kurzstatus', visible: true }
+  ];
 
   const state = {
     paused: false,
@@ -32,12 +54,25 @@
     lastSnapshotAt: 0,
     transport: 'connecting', // 'connecting' | 'sse' | 'polling'
     activeLogContainerId: null,
+    uiSyncedFromServer: false,
+    overviewWidgets: DEFAULT_OVERVIEW_WIDGETS.map((w) => ({ ...w })),
     // Files
     filesPath: '/',
     filesViewMode: 'list', // 'list' | 'grid'
     filesListing: null,
     selectedFiles: new Set(),
     activeEditorPath: null,
+    filesTrashMode: false,
+    trashListing: null,
+    selectedTrashKeys: new Set(),
+    copyMoveSources: [],
+    copyMoveBrowserPath: '/',
+    // Smart Features
+    analyzerData: null,
+    analyzerPollTimer: null,
+    analyzerTab: 'duplicates',
+    analyzerSelectedRoots: null,
+    automationData: null,
     // App Store & Compose
     appCatalog: [],
     composeTemplates: [],
@@ -155,25 +190,119 @@
     }
   }
 
-  // ==================== THEME ====================
+  // ==================== THEMES & ACCENTS ====================
+  function normalizeThemeName(raw) {
+    if (raw === 'dark') return 'studio-dark';
+    if (raw === 'light') return 'studio-light';
+    return THEMES.includes(raw) ? raw : 'studio-dark';
+  }
+
   function initTheme() {
-    const saved = localStorage.getItem('hs_theme') || 'dark';
-    applyTheme(saved);
+    const savedTheme = normalizeThemeName(localStorage.getItem('hs_theme') || 'studio-dark');
+    const savedAccent = localStorage.getItem('hs_accent') || 'blue';
+    applyTheme(savedTheme, false);
+    applyAccent(savedAccent, false);
+
     document.getElementById('btn-theme').addEventListener('click', () => {
-      const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-      applyTheme(next);
+      const current = normalizeThemeName(document.documentElement.getAttribute('data-theme'));
+      const next = THEMES[(THEMES.indexOf(current) + 1) % THEMES.length];
+      applyTheme(next, true);
     });
   }
 
-  function applyTheme(theme) {
+  function applyTheme(rawTheme, persistServer = false) {
+    const theme = normalizeThemeName(rawTheme);
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('hs_theme', theme);
-    document.getElementById('icon-sun').classList.toggle('hidden', theme === 'dark');
-    document.getElementById('icon-moon').classList.toggle('hidden', theme === 'light');
+
+    const isLight = theme === 'studio-light';
+    document.getElementById('icon-sun').classList.toggle('hidden', !isLight);
+    document.getElementById('icon-moon').classList.toggle('hidden', isLight);
+
+    const labelEl = document.getElementById('topbar-theme-name');
+    if (labelEl) labelEl.textContent = THEME_LABELS[theme] || theme;
+
+    document.querySelectorAll('[data-pick-theme]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.pickTheme === theme);
+    });
+
     if (state.snapshot) {
       drawTelemetryChart();
       drawMediaDonut();
     }
+
+    if (persistServer && state.snapshot) {
+      saveConfigPatch({ ui: { theme } }).catch(() => {});
+    }
+  }
+
+  function applyAccent(accent, persistServer = false) {
+    const valid = ['blue', 'amber', 'emerald', 'purple', 'red'];
+    const safeAccent = valid.includes(accent) ? accent : 'blue';
+    document.documentElement.setAttribute('data-accent', safeAccent);
+    localStorage.setItem('hs_accent', safeAccent);
+
+    document.querySelectorAll('[data-pick-accent]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.pickAccent === safeAccent);
+    });
+
+    if (persistServer && state.snapshot) {
+      saveConfigPatch({ ui: { accent: safeAccent } }).catch(() => {});
+    }
+  }
+
+  // ==================== OVERVIEW WIDGETS ====================
+  function applyOverviewWidgets(widgets) {
+    const list = Array.isArray(widgets) && widgets.length > 0 ? widgets : DEFAULT_OVERVIEW_WIDGETS;
+    state.overviewWidgets = list.map((w) => ({ ...w }));
+
+    const container = document.getElementById('overview-widgets-container');
+    if (container) {
+      const byId = new Map();
+      container.querySelectorAll('[data-widget-id]').forEach((el) => {
+        byId.set(el.dataset.widgetId, el);
+      });
+
+      const visibleSet = new Set();
+      state.overviewWidgets.forEach((w) => {
+        const el = byId.get(w.id);
+        if (!el) return;
+        el.classList.toggle('hidden', !w.visible);
+        if (w.visible) visibleSet.add(w.id);
+        container.appendChild(el);
+      });
+
+      const telemetryEl = byId.get('telemetry');
+      const mediaEl = byId.get('media');
+      if (telemetryEl) telemetryEl.classList.toggle('widget-wide', visibleSet.has('telemetry') && !visibleSet.has('media'));
+      if (mediaEl) mediaEl.classList.toggle('widget-wide', visibleSet.has('media') && !visibleSet.has('telemetry'));
+
+      const svcEl = byId.get('services');
+      const dockerEl = byId.get('docker');
+      if (svcEl) svcEl.classList.toggle('widget-wide', visibleSet.has('services') && !visibleSet.has('docker'));
+      if (dockerEl) dockerEl.classList.toggle('widget-wide', visibleSet.has('docker') && !visibleSet.has('services'));
+    }
+
+    renderWidgetCustomizer();
+  }
+
+  function renderWidgetCustomizer() {
+    const listEl = document.getElementById('overview-widget-config-list');
+    if (!listEl) return;
+    listEl.innerHTML = state.overviewWidgets
+      .map((w, idx) => `
+        <div class="widget-config-row">
+          <label class="widget-config-label">
+            <input type="checkbox" data-toggle-widget="${escapeHtml(w.id)}" ${w.visible ? 'checked' : ''} />
+            <span>${escapeHtml(w.label)}</span>
+          </label>
+          <div style="display:flex;gap:4px;">
+            <button type="button" class="btn-secondary btn-xs" data-move-widget="${escapeHtml(w.id)}" data-dir="-1" ${idx === 0 ? 'disabled' : ''} title="Nach oben">↑</button>
+            <button type="button" class="btn-secondary btn-xs" data-move-widget="${escapeHtml(w.id)}" data-dir="1" ${idx === state.overviewWidgets.length - 1 ? 'disabled' : ''} title="Nach unten">↓</button>
+          </div>
+        </div>
+      `)
+      .join('');
   }
 
   // ==================== NAVIGATION & MODALS ====================
@@ -193,12 +322,19 @@
         drawMediaDonut();
       });
     } else if (viewName === 'files') {
-      loadFilesDirectory(state.filesPath);
+      if (state.filesTrashMode) loadTrashView();
+      else loadFilesDirectory(state.filesPath);
+      refreshTrashBadge();
+    } else if (viewName === 'smb') {
+      loadSmbStatus();
+    } else if (viewName === 'portainer') {
+      loadDeployedStacks();
     } else if (viewName === 'appstore') {
       loadAppCatalog();
-      loadDeployedStacks();
-    } else if (viewName === 'storage') {
-      loadSmbStatus();
+    } else if (viewName === 'analyzer') {
+      loadAnalyzerStatus();
+    } else if (viewName === 'automation') {
+      loadAutomationState();
     }
   }
 
@@ -326,6 +462,15 @@
     if (!data || !data.system) return;
     state.snapshot = data;
     state.lastSnapshotAt = Date.now();
+
+    if (!state.uiSyncedFromServer && data.config?.ui) {
+      state.uiSyncedFromServer = true;
+      if (data.config.ui.theme) applyTheme(data.config.ui.theme, false);
+      if (data.config.ui.accent) applyAccent(data.config.ui.accent, false);
+      if (Array.isArray(data.config.ui.overviewWidgets)) {
+        applyOverviewWidgets(data.config.ui.overviewWidgets);
+      }
+    }
 
     updateLiveIndicator();
 
@@ -466,17 +611,23 @@
             type: 'Festplatte',
             label: d.label,
             sub: `${d.mountpoint} · ${formatBytesDecimal(d.usedBytes)} / ${formatBytesDecimal(d.totalBytes)}`,
-            action: () => { switchView('files'); loadFilesDirectory(d.mountpoint); closeModal('modal-search'); }
+            action: () => { state.filesTrashMode = false; switchView('files'); loadFilesDirectory(d.mountpoint); closeModal('modal-search'); }
           });
         }
       });
     }
 
     const navTargets = [
-      { label: 'Dateimanager öffnen', view: 'files' },
-      { label: 'App Store & Compose Stacks', view: 'appstore' },
-      { label: 'Festplatten & SMB-Freigaben', view: 'storage' },
-      { label: 'Docker-Container verwalten', view: 'docker' }
+      { label: 'Übersicht & Cockpit', view: 'overview' },
+      { label: 'Dateimanager & Papierkorb', view: 'files' },
+      { label: 'Festplatten & Blockgeräte', view: 'storage' },
+      { label: 'Freigaben (SMB / Samba)', view: 'smb' },
+      { label: 'Docker-Container verwalten', view: 'docker' },
+      { label: 'Portainer & Compose Stacks', view: 'portainer' },
+      { label: 'Homeserver App Store', view: 'appstore' },
+      { label: 'Speicher-Analyse & Duplikate', view: 'analyzer' },
+      { label: 'Automation, Watchdog & Wake-on-LAN', view: 'automation' },
+      { label: 'Design, Themes & Einstellungen', view: 'settings' }
     ];
     navTargets.forEach((n) => {
       if (!q || n.label.toLowerCase().includes(q)) {
@@ -1273,11 +1424,29 @@
       .join('');
   }
 
-  // ==================== FILES MANAGER ====================
+  // ==================== FILES MANAGER & TRASH ====================
+  async function refreshTrashBadge() {
+    try {
+      const res = await fetch('/api/files/trash');
+      if (!res.ok) return;
+      const data = await res.json();
+      const badge = document.getElementById('trash-count-badge');
+      if (badge) badge.textContent = String((data.items || []).length);
+    } catch {
+      // ignore
+    }
+  }
+
   async function loadFilesDirectory(targetPath) {
+    state.filesTrashMode = false;
     state.filesPath = targetPath || '/';
     state.selectedFiles.clear();
     updateBulkBar();
+    document.getElementById('btn-files-trash')?.classList.remove('active');
+    document.getElementById('files-trash-bar')?.classList.add('hidden');
+    document.getElementById('files-trash-container')?.classList.add('hidden');
+    document.getElementById('files-header-actions')?.classList.remove('hidden');
+
     try {
       const res = await fetch(`/api/files/list?path=${encodeURIComponent(state.filesPath)}`);
       if (!res.ok) throw new Error('Ordner konnte nicht geladen werden');
@@ -1288,10 +1457,83 @@
     }
   }
 
+  async function loadTrashView() {
+    state.filesTrashMode = true;
+    state.selectedTrashKeys.clear();
+    document.getElementById('btn-files-trash')?.classList.add('active');
+    document.querySelectorAll('#files-roots-list .file-root-btn').forEach((b) => b.classList.remove('active'));
+    document.getElementById('files-bulk-bar')?.classList.add('hidden');
+    document.getElementById('files-list-container')?.classList.add('hidden');
+    document.getElementById('files-grid-container')?.classList.add('hidden');
+    document.getElementById('files-trash-bar')?.classList.remove('hidden');
+    document.getElementById('files-trash-container')?.classList.remove('hidden');
+    document.getElementById('files-breadcrumbs').innerHTML = `<button class="crumb-btn" data-open-dir="/">Laufwerke</button><span class="crumb-sep">/</span><span class="tag">Papierkorb</span>`;
+
+    try {
+      const res = await fetch('/api/files/trash');
+      if (!res.ok) throw new Error('Papierkorb konnte nicht geladen werden');
+      state.trashListing = await res.json();
+      renderTrashView();
+    } catch (err) {
+      document.getElementById('files-trash-tbody').innerHTML = `<tr><td colspan="6" class="form-error">${escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+
+  function updateTrashBulkBar() {
+    const count = state.selectedTrashKeys.size;
+    document.getElementById('btn-trash-restore-sel')?.classList.toggle('hidden', count === 0);
+    document.getElementById('btn-trash-delete-sel')?.classList.toggle('hidden', count === 0);
+  }
+
+  function renderTrashView() {
+    const data = state.trashListing || { items: [] };
+    const items = data.items || [];
+    const badge = document.getElementById('trash-count-badge');
+    if (badge) badge.textContent = String(items.length);
+
+    const search = (document.getElementById('files-search').value || '').toLowerCase();
+    const filtered = items.filter((i) => !search || i.name.toLowerCase().includes(search) || (i.originalPath || '').toLowerCase().includes(search));
+
+    const tbody = document.getElementById('files-trash-tbody');
+    if (filtered.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" class="muted-text">Der Papierkorb ist leer.</td></tr>`;
+      updateTrashBulkBar();
+      return;
+    }
+
+    tbody.innerHTML = filtered
+      .map((item) => {
+        const checked = state.selectedTrashKeys.has(item.trashKey) ? 'checked' : '';
+        const delStr = item.deletedAt ? new Date(item.deletedAt).toLocaleString('de-DE') : '—';
+        return `
+          <tr>
+            <td><input type="checkbox" class="trash-select-cb" data-trash-key="${escapeHtml(item.trashKey)}" ${checked} /></td>
+            <td>
+              <span style="display:inline-flex;align-items:center;gap:6px;font-weight:500;">
+                <span>${item.isDirectory ? '📁' : '📄'}</span>
+                <span>${escapeHtml(item.name)}</span>
+              </span>
+            </td>
+            <td class="mono" style="font-size:11.5px;color:var(--text-secondary);">${escapeHtml(item.originalPath)}</td>
+            <td class="num mono">${item.isDirectory ? 'Ordner' : formatBytesDecimal(item.sizeBytes)}</td>
+            <td class="mono" style="font-size:11.5px;color:var(--text-muted);">${escapeHtml(delStr)}</td>
+            <td class="num">
+              <div class="table-actions-row">
+                <button class="btn-secondary btn-sm" data-trash-restore="${escapeHtml(item.trashKey)}">Wiederherstellen</button>
+                <button class="btn-danger-ghost btn-sm" data-trash-delete="${escapeHtml(item.trashKey)}" data-trash-name="${escapeHtml(item.name)}">Endgültig löschen</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      })
+      .join('');
+    updateTrashBulkBar();
+  }
+
   function updateBulkBar() {
     const bar = document.getElementById('files-bulk-bar');
     const count = state.selectedFiles.size;
-    bar.classList.toggle('hidden', count === 0);
+    bar.classList.toggle('hidden', state.filesTrashMode || count === 0);
     document.getElementById('files-bulk-count').textContent = `${count} ausgewählt`;
   }
 
@@ -1309,6 +1551,10 @@
   }
 
   function renderFilesView() {
+    if (state.filesTrashMode) {
+      renderTrashView();
+      return;
+    }
     const listing = state.filesListing;
     if (!listing) return;
 
@@ -1316,7 +1562,7 @@
     rootsList.innerHTML = [
       `<button class="file-root-btn ${listing.currentPath === '/' ? 'active' : ''}" data-open-dir="/"><span>Alle Laufwerke</span></button>`,
       ...listing.roots.map((r) => `
-        <button class="file-root-btn ${listing.currentPath === r.path || listing.currentPath.startsWith(r.path + '/') ? 'active' : ''}" data-open-dir="${escapeHtml(r.path)}">
+        <button class="file-root-btn ${listing.currentPath === r.path || listing.currentPath.startsWith(r.path + '/') ? 'active' : ''}" data-open-dir="${escapeHtml(r.path)}" data-drop-dir="${escapeHtml(r.path)}">
           <span>${escapeHtml(r.name)}</span>
         </button>
       `)
@@ -1331,7 +1577,7 @@
       const crumbHtml = [`<button class="crumb-btn" data-open-dir="/">Laufwerke</button>`];
       parts.forEach((part) => {
         acc += `/${part}`;
-        crumbHtml.push(`<span class="crumb-sep">/</span><button class="crumb-btn" data-open-dir="${escapeHtml(acc)}">${escapeHtml(part)}</button>`);
+        crumbHtml.push(`<span class="crumb-sep">/</span><button class="crumb-btn" data-open-dir="${escapeHtml(acc)}" data-drop-dir="${escapeHtml(acc)}">${escapeHtml(part)}</button>`);
       });
       crumbsEl.innerHTML = crumbHtml.join('');
     }
@@ -1343,7 +1589,6 @@
     const search = (document.getElementById('files-search').value || '').toLowerCase();
     const filtered = (listing.items || []).filter((i) => !search || i.name.toLowerCase().includes(search));
 
-    // List View
     const listContainer = document.getElementById('files-list-container');
     const gridContainer = document.getElementById('files-grid-container');
     listContainer.classList.toggle('hidden', state.filesViewMode !== 'list');
@@ -1352,7 +1597,8 @@
     const tbody = document.getElementById('files-tbody');
     const rows = [];
     if (listing.parentPath !== null) {
-      rows.push(`<tr><td></td><td colspan="5"><button class="file-entry-btn mono" data-open-dir="${escapeHtml(listing.parentPath)}">.. (Ebene nach oben)</button></td></tr>`);
+      const dropParentAttr = listing.parentPath !== '/' ? `data-drop-dir="${escapeHtml(listing.parentPath)}"` : '';
+      rows.push(`<tr ${dropParentAttr}><td></td><td colspan="5"><button class="file-entry-btn mono" data-open-dir="${escapeHtml(listing.parentPath)}">.. (Ebene nach oben)</button></td></tr>`);
     }
 
     if (filtered.length === 0) {
@@ -1363,23 +1609,30 @@
         const isText = item.kind === 'text';
         const isArchive = item.kind === 'archive' && (item.name.endsWith('.zip') || item.name.endsWith('.tar.gz') || item.name.endsWith('.tgz') || item.name.endsWith('.tar'));
         const modStr = item.modifiedAt ? new Date(item.modifiedAt).toLocaleString('de-DE') : '—';
-        const dlUrl = `/api/files/raw?path=${encodeURIComponent(item.path)}&download=1`;
+        const dlUrl = item.isDirectory
+          ? `/api/files/zip?path=${encodeURIComponent(item.path)}`
+          : `/api/files/raw?path=${encodeURIComponent(item.path)}&download=1`;
         const checked = state.selectedFiles.has(item.path) ? 'checked' : '';
 
         const actionBtns = item.isDirectory
-          ? `<button class="btn-secondary btn-sm" data-open-dir="${escapeHtml(item.path)}">Öffnen</button>`
+          ? `<button class="btn-secondary btn-sm" data-open-dir="${escapeHtml(item.path)}">Öffnen</button>
+             <a class="btn-secondary btn-sm" href="${escapeHtml(dlUrl)}" download style="text-decoration:none;">ZIP laden</a>`
           : `${isPreviewable ? `<button class="btn-secondary btn-sm" data-preview-file="${escapeHtml(item.path)}" data-preview-kind="${escapeHtml(item.kind)}" data-preview-name="${escapeHtml(item.name)}">Ansehen</button>` : ''}
              ${isText ? `<button class="btn-secondary btn-sm" data-edit-text="${escapeHtml(item.path)}">Editor</button>` : ''}
              ${isArchive && canWrite ? `<button class="btn-secondary btn-sm" data-extract-file="${escapeHtml(item.path)}">Entpacken</button>` : ''}
              <a class="btn-secondary btn-sm" href="${escapeHtml(dlUrl)}" download style="text-decoration:none;">Download</a>`;
 
         const writeBtns = canWrite
-          ? `<button class="btn-secondary btn-sm" data-rename-file="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}">Umbenennen</button>
-             <button class="btn-danger-ghost btn-sm" data-delete-file="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}">Löschen</button>`
+          ? `<button class="btn-secondary btn-sm" data-move-single="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}">Verschieben</button>
+             <button class="btn-secondary btn-sm" data-rename-file="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}">Umbenennen</button>
+             <button class="btn-danger-ghost btn-sm" data-delete-file="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}">Papierkorb</button>`
           : '';
 
+        const dragAttr = canWrite ? `draggable="true" data-drag-path="${escapeHtml(item.path)}"` : '';
+        const dropAttr = item.isDirectory ? `data-drop-dir="${escapeHtml(item.path)}"` : '';
+
         rows.push(`
-          <tr>
+          <tr ${dragAttr} ${dropAttr}>
             <td>${listing.currentPath !== '/' ? `<input type="checkbox" class="file-select-cb" data-file-path="${escapeHtml(item.path)}" ${checked} />` : ''}</td>
             <td>
               <button class="file-entry-btn" ${item.isDirectory ? `data-open-dir="${escapeHtml(item.path)}"` : isText ? `data-edit-text="${escapeHtml(item.path)}"` : `data-preview-file="${escapeHtml(item.path)}" data-preview-kind="${escapeHtml(item.kind)}" data-preview-name="${escapeHtml(item.name)}"`}>
@@ -1391,7 +1644,7 @@
             <td class="num mono">${item.isDirectory ? '—' : formatBytesDecimal(item.sizeBytes)}</td>
             <td class="mono" style="font-size:11.5px;color:var(--text-muted);">${escapeHtml(modStr)}</td>
             <td class="num">
-              <div style="display:inline-flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;">
+              <div class="table-actions-row">
                 ${actionBtns}
                 ${writeBtns}
               </div>
@@ -1402,10 +1655,14 @@
     }
     tbody.innerHTML = rows.join('');
 
-    // Grid View (with thumbnails for photos!)
+    // Grid View (with thumbnails, checkboxes, Drag&Drop & quick Move/Download/Trash buttons)
     gridContainer.innerHTML = filtered
       .map((item) => {
         const rawUrl = `/api/files/raw?path=${encodeURIComponent(item.path)}`;
+        const dlUrl = item.isDirectory
+          ? `/api/files/zip?path=${encodeURIComponent(item.path)}`
+          : `/api/files/raw?path=${encodeURIComponent(item.path)}&download=1`;
+        const checked = state.selectedFiles.has(item.path) ? 'checked' : '';
         const thumb = item.isDirectory
           ? '📁'
           : item.kind === 'image'
@@ -1422,16 +1679,95 @@
           : item.kind === 'text'
           ? `data-edit-text="${escapeHtml(item.path)}"`
           : `data-preview-file="${escapeHtml(item.path)}" data-preview-kind="${escapeHtml(item.kind)}" data-preview-name="${escapeHtml(item.name)}"`;
+        const dragAttr = canWrite ? `draggable="true" data-drag-path="${escapeHtml(item.path)}"` : '';
+        const dropAttr = item.isDirectory ? `data-drop-dir="${escapeHtml(item.path)}"` : '';
 
         return `
-          <div class="file-grid-card" ${attr}>
-            <div class="file-thumb-box">${thumb}</div>
-            <div class="file-grid-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
-            <div class="mono" style="font-size:11px;color:var(--text-muted);">${item.isDirectory ? 'Ordner' : formatBytesDecimal(item.sizeBytes)}</div>
+          <div class="file-grid-card" ${dragAttr} ${dropAttr}>
+            <div class="file-grid-top">
+              ${listing.currentPath !== '/' ? `<input type="checkbox" class="file-select-cb" data-file-path="${escapeHtml(item.path)}" ${checked} />` : '<span></span>'}
+              <span class="mono" style="font-size:10.5px;color:var(--text-muted);">${item.isDirectory ? 'Ordner' : formatBytesDecimal(item.sizeBytes)}</span>
+            </div>
+            <div class="file-thumb-box" ${attr}>${thumb}</div>
+            <div class="file-grid-name" ${attr} title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
+            <div class="file-grid-actions">
+              <a class="btn-secondary btn-xs" href="${escapeHtml(dlUrl)}" download style="text-decoration:none;" title="${item.isDirectory ? 'Als ZIP herunterladen' : 'Herunterladen'}">${item.isDirectory ? 'ZIP' : 'Laden'}</a>
+              ${canWrite ? `<button type="button" class="btn-secondary btn-xs" data-move-single="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}">Verschieben</button>
+              <button type="button" class="btn-danger-ghost btn-xs" data-delete-file="${escapeHtml(item.path)}" data-file-name="${escapeHtml(item.name)}">🗑️ </button>` : ''}
+            </div>
           </div>
         `;
       })
       .join('');
+  }
+
+  async function loadCopyMoveDirs(targetPath) {
+    const dest = targetPath || '/';
+    state.copyMoveBrowserPath = dest;
+    const listEl = document.getElementById('cm-dir-list');
+    const crumbsEl = document.getElementById('cm-breadcrumbs');
+    if (listEl) listEl.innerHTML = `<p class="muted-text" style="padding:8px;">Lade Ordner…</p>`;
+    try {
+      const res = await fetch(`/api/files/dirs?path=${encodeURIComponent(dest)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Ordner nicht lesbar');
+
+      state.copyMoveBrowserPath = data.currentPath;
+      if (data.currentPath !== '/') {
+        document.getElementById('cm-dest-input').value = data.currentPath;
+      }
+
+      if (data.currentPath === '/') {
+        crumbsEl.innerHTML = `<button type="button" class="crumb-btn" data-cm-browse="/">Laufwerke</button>`;
+      } else {
+        const parts = data.currentPath.split('/').filter(Boolean);
+        let acc = '';
+        const html = [`<button type="button" class="crumb-btn" data-cm-browse="/">Laufwerke</button>`];
+        parts.forEach((p) => {
+          acc += `/${p}`;
+          html.push(`<span class="crumb-sep">/</span><button type="button" class="crumb-btn" data-cm-browse="${escapeHtml(acc)}">${escapeHtml(p)}</button>`);
+        });
+        crumbsEl.innerHTML = html.join('');
+      }
+
+      const mkdirBtn = document.getElementById('cm-btn-mkdir');
+      if (mkdirBtn) mkdirBtn.disabled = data.currentPath === '/';
+
+      const rows = [];
+      if (data.parentPath !== null) {
+        rows.push(`<button type="button" class="cm-dir-btn mono" data-cm-browse="${escapeHtml(data.parentPath)}">⬆️ .. (Ebene nach oben)</button>`);
+      }
+      if (!data.dirs || data.dirs.length === 0) {
+        rows.push(`<p class="muted-text" style="padding:6px 10px;">Keine Unterordner vorhanden.</p>`);
+      } else {
+        data.dirs.forEach((d) => {
+          rows.push(`<button type="button" class="cm-dir-btn" data-cm-browse="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</button>`);
+        });
+      }
+      listEl.innerHTML = rows.join('');
+    } catch (err) {
+      if (listEl) listEl.innerHTML = `<p class="form-error" style="padding:8px;">${escapeHtml(err.message)}</p>`;
+    }
+  }
+
+  function openCopyMoveModal(action, sourcesList) {
+    state.copyMoveSources = Array.isArray(sourcesList) && sourcesList.length > 0 ? [...sourcesList] : [...state.selectedFiles];
+    if (state.copyMoveSources.length === 0) return;
+
+    document.getElementById('cm-action').value = action;
+    document.getElementById('modal-cm-title').textContent = action === 'move' ? 'Verschieben nach…' : 'Kopieren nach…';
+    document.getElementById('cm-submit-btn').textContent = action === 'move' ? 'Hierher verschieben' : 'Hierher kopieren';
+    document.getElementById('cm-source-summary').textContent = `${state.copyMoveSources.length} Element(e) ausgewählt`;
+
+    const startDir = state.filesPath && state.filesPath !== '/' ? state.filesPath : getDefaultDiskMount('/');
+    document.getElementById('cm-dest-input').value = startDir !== '/' ? startDir : '';
+
+    const roots = state.filesListing?.roots || [];
+    document.getElementById('cm-quick-roots').innerHTML = roots
+      .map((r) => `<button type="button" class="btn-secondary btn-sm" data-cm-browse="${escapeHtml(r.path)}">${escapeHtml(r.name)}</button>`)
+      .join('');
+    loadCopyMoveDirs(startDir);
+    openModal('modal-copy-move');
   }
 
   function uploadFilesWithProgress(fileList) {
@@ -1789,6 +2125,343 @@
     };
   }
 
+  // ==================== SMART STORAGE ANALYZER ====================
+  function renderAnalyzerRoots() {
+    const container = document.getElementById('analyzer-roots-list');
+    if (!container) return;
+
+    const rootMap = new Map();
+    (state.filesListing?.roots || []).forEach((r) => {
+      if (r?.path) rootMap.set(r.path, r.name || r.path);
+    });
+    if (rootMap.size === 0) {
+      (state.snapshot?.storage?.disks || []).forEach((d) => {
+        if (d?.mountpoint) rootMap.set(d.mountpoint, d.label ? `${d.label} (${d.mountpoint})` : d.mountpoint);
+      });
+      (state.snapshot?.config?.mediaPaths || []).forEach((p) => {
+        if (p && !rootMap.has(p)) rootMap.set(p, p);
+      });
+    }
+
+    const entries = [...rootMap.entries()];
+    if (entries.length === 0) {
+      container.innerHTML = `<span class="muted-text">Keine Speicherpfade konfiguriert.</span>`;
+      return;
+    }
+
+    if (state.analyzerSelectedRoots === null) {
+      state.analyzerSelectedRoots = new Set(entries.map(([p]) => p));
+    }
+
+    container.innerHTML = entries
+      .map(([p, label]) => {
+        const checked = state.analyzerSelectedRoots.has(p) ? 'checked' : '';
+        return `
+          <label class="accent-swatch-btn" style="cursor:pointer;">
+            <input type="checkbox" class="analyzer-root-cb" value="${escapeHtml(p)}" ${checked} />
+            <span>${escapeHtml(label)}</span>
+          </label>
+        `;
+      })
+      .join('');
+  }
+
+  async function loadAnalyzerStatus() {
+    try {
+      if (!state.filesListing) {
+        const rootRes = await fetch('/api/files/list?path=%2F');
+        if (rootRes.ok) state.filesListing = await rootRes.json();
+      }
+      renderAnalyzerRoots();
+
+      const res = await fetch('/api/analyzer/status', { cache: 'no-store' });
+      if (!res.ok) return;
+      state.analyzerData = await res.json();
+      renderAnalyzerView();
+
+      if (state.analyzerPollTimer) {
+        clearTimeout(state.analyzerPollTimer);
+        state.analyzerPollTimer = null;
+      }
+      if (state.analyzerData.running && state.activeView === 'analyzer') {
+        state.analyzerPollTimer = setTimeout(loadAnalyzerStatus, 900);
+      }
+    } catch {
+      // ignore transient errors
+    }
+  }
+
+  function renderAnalyzerView() {
+    const data = state.analyzerData;
+    const scanBtn = document.getElementById('btn-analyzer-scan');
+    const subEl = document.getElementById('analyzer-status-subtitle');
+    const progWrap = document.getElementById('analyzer-progress-wrap');
+    const progLabel = document.getElementById('analyzer-progress-label');
+    const progStats = document.getElementById('analyzer-progress-stats');
+
+    document.querySelectorAll('[data-ana-tab]').forEach((b) => {
+      b.classList.toggle('active', b.dataset.anaTab === state.analyzerTab);
+    });
+    document.getElementById('analyzer-panel-duplicates')?.classList.toggle('hidden', state.analyzerTab !== 'duplicates');
+    document.getElementById('analyzer-panel-dirs')?.classList.toggle('hidden', state.analyzerTab !== 'dirs');
+    document.getElementById('analyzer-panel-files')?.classList.toggle('hidden', state.analyzerTab !== 'files');
+
+    if (!data) return;
+
+    if (scanBtn) {
+      scanBtn.disabled = Boolean(data.running);
+      scanBtn.textContent = data.running ? 'Analyse läuft…' : 'Analyse starten';
+    }
+
+    if (subEl) {
+      if (data.running) {
+        subEl.textContent = data.phase === 'hashing'
+          ? 'Phase 2/2: Berechne bitgenaue SHA-256 Prüfsummen für mögliche Duplikate…'
+          : 'Phase 1/2: Durchsuche Ordner und erfasse Dateigrößen…';
+      } else if (data.phase === 'error') {
+        subEl.textContent = `Fehler: ${data.error || 'Unbekannter Fehler'}`;
+      } else if (data.phase === 'done' && data.finishedAt) {
+        subEl.textContent = `Letzte Analyse abgeschlossen am ${new Date(data.finishedAt).toLocaleString('de-DE')}`;
+      } else {
+        subEl.textContent = 'Bereit — wähle alle oder bestimmte Laufwerke';
+      }
+    }
+
+    if (progWrap) {
+      progWrap.classList.toggle('hidden', !data.running);
+      if (progLabel) {
+        progLabel.textContent = data.phase === 'hashing' ? 'Vergleiche SHA-256 Prüfsummen…' : 'Scanne Dateisystem…';
+      }
+      if (progStats) {
+        progStats.textContent = `${formatNumber(data.scannedFiles)} Dateien · ${formatBytesDecimal(data.scannedBytes)}${data.hashedFiles ? ` · ${formatNumber(data.hashedFiles)} SHA-256` : ''}`;
+      }
+    }
+
+    const summary = data.summary || {};
+    document.getElementById('ana-kpi-files').textContent = formatNumber(data.running ? data.scannedFiles : summary.totalFiles || data.scannedFiles);
+    document.getElementById('ana-kpi-dirs').textContent = `${formatNumber(data.scannedDirs)} Ordner gescannt`;
+    document.getElementById('ana-kpi-bytes').textContent = formatBytesDecimal(data.running ? data.scannedBytes : summary.totalBytes || data.scannedBytes);
+    document.getElementById('ana-kpi-dups').textContent = formatNumber(summary.duplicateGroupCount || 0);
+    document.getElementById('ana-kpi-extra').textContent = `${formatNumber(summary.duplicateExtraFiles || 0)} überzählige Kopien`;
+    document.getElementById('ana-kpi-wasted').textContent = formatBytesDecimal(summary.wastedBytes || 0);
+
+    // Duplicates list
+    const dupList = document.getElementById('analyzer-duplicates-list');
+    const groups = data.duplicateGroups || [];
+    if (dupList) {
+      if (groups.length === 0) {
+        dupList.innerHTML = `<article class="card panel-card"><p class="muted-text">${
+          data.phase === 'done'
+            ? 'Keine Duplikate (≥ 1 KB) in den gewählten Pfaden gefunden — alles sauber!'
+            : 'Starte oben eine Analyse, um identische Dateien über deine Laufwerke aufzuspüren.'
+        }</p></article>`;
+      } else {
+        dupList.innerHTML = groups
+          .map((g, idx) => `
+            <article class="card dup-group-card">
+              <div class="dup-group-head">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <span class="tag tag-warn">${g.files.length}× identisch</span>
+                  <strong>${escapeHtml(g.files[0]?.name || 'Datei')}</strong>
+                  <span class="mono" style="font-size:12px;color:var(--text-secondary);">je ${formatBytesDecimal(g.sizeBytes)} · Einsparung: ${formatBytesDecimal(g.wastedBytes)}</span>
+                  <span class="tag mono" title="${escapeHtml(g.fullHash || g.hash)}">SHA-256 ${escapeHtml(g.hash)}</span>
+                </div>
+                <button type="button" class="btn-danger-ghost btn-sm" data-trash-dup-group="${idx}">
+                  ${g.files.length - 1} Kopie(n) in Papierkorb
+                </button>
+              </div>
+              <div class="dup-file-list">
+                ${g.files
+                  .map((f, fIdx) => `
+                    <div class="dup-file-row">
+                      <div style="min-width:0;display:flex;align-items:center;gap:8px;overflow:hidden;">
+                        ${fIdx === 0 ? `<span class="tag tag-ok">Original behalten</span>` : `<span class="tag">Kopie</span>`}
+                        <span class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</span>
+                      </div>
+                      <div style="display:flex;gap:6px;flex-shrink:0;">
+                        <a class="btn-secondary btn-xs" href="/api/files/raw?path=${encodeURIComponent(f.path)}&download=1" download style="text-decoration:none;">Laden</a>
+                        <button type="button" class="btn-danger-ghost btn-xs" data-trash-single-path="${escapeHtml(f.path)}" data-trash-name="${escapeHtml(f.name)}">Papierkorb</button>
+                      </div>
+                    </div>
+                  `)
+                  .join('')}
+              </div>
+            </article>
+          `)
+          .join('');
+      }
+    }
+
+    // Largest directories
+    const dirsTbody = document.getElementById('analyzer-dirs-tbody');
+    const dirs = data.largestDirs || [];
+    if (dirsTbody) {
+      dirsTbody.innerHTML = dirs.length === 0
+        ? `<tr><td colspan="5" class="muted-text">Noch keine Ordner-Statistiken vorhanden.</td></tr>`
+        : dirs
+            .map((d) => `
+              <tr>
+                <td><strong>📁 ${escapeHtml(d.name)}</strong></td>
+                <td class="mono" style="font-size:11.5px;color:var(--text-secondary);">${escapeHtml(d.path)}</td>
+                <td class="num mono">${formatNumber(d.fileCount)}</td>
+                <td class="num mono"><strong>${formatBytesDecimal(d.totalBytes)}</strong></td>
+                <td class="num"><button type="button" class="btn-secondary btn-sm" data-open-analyzer-dir="${escapeHtml(d.path)}">Im Dateimanager</button></td>
+              </tr>
+            `)
+            .join('');
+    }
+
+    // Largest files
+    const filesTbody = document.getElementById('analyzer-files-tbody');
+    const topFiles = data.largestFiles || [];
+    if (filesTbody) {
+      filesTbody.innerHTML = topFiles.length === 0
+        ? `<tr><td colspan="4" class="muted-text">Noch keine Datei-Statistiken vorhanden.</td></tr>`
+        : topFiles
+            .map((f) => `
+              <tr>
+                <td><strong>📄 ${escapeHtml(f.name)}</strong></td>
+                <td class="mono" style="font-size:11.5px;color:var(--text-secondary);">${escapeHtml(f.path)}</td>
+                <td class="num mono"><strong>${formatBytesDecimal(f.sizeBytes)}</strong></td>
+                <td class="num">
+                  <div class="table-actions-row">
+                    <a class="btn-secondary btn-sm" href="/api/files/raw?path=${encodeURIComponent(f.path)}&download=1" download style="text-decoration:none;">Download</a>
+                    <button type="button" class="btn-danger-ghost btn-sm" data-trash-single-path="${escapeHtml(f.path)}" data-trash-name="${escapeHtml(f.name)}">Papierkorb</button>
+                  </div>
+                </td>
+              </tr>
+            `)
+            .join('');
+    }
+  }
+
+  // ==================== AUTOMATION, WATCHDOG & WAKE-ON-LAN ====================
+  async function loadAutomationState() {
+    try {
+      const res = await fetch('/api/automation/state', { cache: 'no-store' });
+      if (!res.ok) return;
+      state.automationData = await res.json();
+      renderAutomationView();
+    } catch {
+      // ignore
+    }
+  }
+
+  function renderWatchdogContainerPicker(selectedNames = []) {
+    const mode = document.getElementById('wd-mode')?.value || 'all';
+    const group = document.getElementById('wd-containers-group');
+    const listEl = document.getElementById('wd-containers-list');
+    if (!group || !listEl) return;
+
+    group.classList.toggle('hidden', mode !== 'selected');
+    const containers = (state.snapshot?.docker?.containers || []).filter((c) => c.name !== 'homeserver-dashboard');
+    if (containers.length === 0) {
+      listEl.innerHTML = `<span class="muted-text">Keine Container erkannt.</span>`;
+      return;
+    }
+    const selSet = new Set(selectedNames);
+    listEl.innerHTML = containers
+      .map((c) => `
+        <label class="accent-swatch-btn" style="cursor:pointer;">
+          <input type="checkbox" class="wd-container-cb" value="${escapeHtml(c.name)}" ${selSet.has(c.name) ? 'checked' : ''} />
+          <span>${escapeHtml(c.name)}</span>
+        </label>
+      `)
+      .join('');
+  }
+
+  function renderAutomationView() {
+    const data = state.automationData;
+    if (!data) return;
+
+    const wd = data.watchdog || {};
+    const badge = document.getElementById('wd-status-badge');
+    if (badge) {
+      badge.textContent = wd.enabled ? 'Aktiv (30s)' : 'Deaktiviert';
+      badge.className = `tag ${wd.enabled ? 'tag-ok' : ''}`;
+    }
+    document.getElementById('wd-enabled').checked = Boolean(wd.enabled);
+    document.getElementById('wd-mode').value = wd.mode || 'all';
+    document.getElementById('wd-cooldown').value = Number(wd.cooldownSeconds) || 180;
+    document.getElementById('wd-unhealthy').checked = wd.restartUnhealthy !== false;
+    document.getElementById('wd-exited').checked = Boolean(wd.restartExitedError);
+    renderWatchdogContainerPicker(wd.containerNames || []);
+
+    // WoL table
+    const wolBody = document.getElementById('wol-devices-tbody');
+    const devices = data.wolDevices || [];
+    if (wolBody) {
+      wolBody.innerHTML = devices.length === 0
+        ? `<tr><td colspan="4" class="muted-text">Noch keine LAN-Geräte gespeichert.</td></tr>`
+        : devices
+            .map((d) => `
+              <tr>
+                <td><strong>${escapeHtml(d.name)}</strong></td>
+                <td class="mono">${escapeHtml(d.mac)}</td>
+                <td class="mono">${escapeHtml(d.broadcastIp)}:${Number(d.port) || 9}</td>
+                <td class="num">
+                  <div class="table-actions-row">
+                    <button type="button" class="btn-primary btn-sm" data-wol-wake="${escapeHtml(d.id)}">Aufwecken</button>
+                    <button type="button" class="btn-danger-ghost btn-sm" data-wol-del="${escapeHtml(d.id)}">Entfernen</button>
+                  </div>
+                </td>
+              </tr>
+            `)
+            .join('');
+    }
+
+    // Schedules table
+    const schedBody = document.getElementById('schedules-tbody');
+    const schedules = data.schedules || [];
+    const typeLabels = {
+      'media-scan': 'Mediathek-Scan',
+      'storage-analysis': 'Speicher- & Duplikate-Analyse',
+      'container-restart': 'Container-Neustart'
+    };
+    if (schedBody) {
+      schedBody.innerHTML = schedules.length === 0
+        ? `<tr><td colspan="6" class="muted-text">Noch keine täglichen Zeitpläne angelegt.</td></tr>`
+        : schedules
+            .map((s) => `
+              <tr>
+                <td><input type="checkbox" data-sched-toggle="${escapeHtml(s.id)}" ${s.enabled ? 'checked' : ''} aria-label="Zeitplan aktiv" /></td>
+                <td><strong>${escapeHtml(s.name)}</strong></td>
+                <td>${escapeHtml(typeLabels[s.type] || s.type)}${s.target ? ` <span class="tag mono">${escapeHtml(s.target)}</span>` : ''}</td>
+                <td class="mono">${escapeHtml(s.timeHHMM)}</td>
+                <td class="mono">${escapeHtml(s.lastRunDate || 'Noch nie')}</td>
+                <td class="num">
+                  <div class="table-actions-row">
+                    <button type="button" class="btn-secondary btn-sm" data-sched-run="${escapeHtml(s.id)}">Jetzt starten</button>
+                    <button type="button" class="btn-danger-ghost btn-sm" data-sched-del="${escapeHtml(s.id)}">Löschen</button>
+                  </div>
+                </td>
+              </tr>
+            `)
+            .join('');
+    }
+
+    // Events log
+    const evtBody = document.getElementById('automation-events-tbody');
+    const events = data.events || [];
+    if (evtBody) {
+      evtBody.innerHTML = events.length === 0
+        ? `<tr><td colspan="4" class="muted-text">Noch keine Ereignisse protokolliert.</td></tr>`
+        : events
+            .map((ev) => {
+              const lvlClass = ev.level === 'error' ? 'tag-crit' : ev.level === 'warn' ? 'tag-warn' : 'tag-ok';
+              return `
+                <tr>
+                  <td class="mono" style="font-size:11.5px;">${escapeHtml(new Date(ev.ts).toLocaleString('de-DE'))}</td>
+                  <td><span class="tag mono">${escapeHtml(ev.source)}</span></td>
+                  <td><span class="tag ${lvlClass}">${escapeHtml(ev.level)}</span></td>
+                  <td>${escapeHtml(ev.message)}</td>
+                </tr>
+              `;
+            })
+            .join('');
+    }
+  }
+
   // ==================== SETTINGS VIEW ====================
   let settingsPopulated = false;
   function renderSettingsView(data) {
@@ -1800,6 +2473,15 @@
       document.getElementById('input-portainer-url').value = cfg.portainerUrl || detected || '';
       settingsPopulated = true;
     }
+
+    const activeTheme = normalizeThemeName(document.documentElement.getAttribute('data-theme') || cfg.ui?.theme || 'studio-dark');
+    const activeAccent = document.documentElement.getAttribute('data-accent') || cfg.ui?.accent || 'blue';
+    document.querySelectorAll('[data-pick-theme]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.pickTheme === activeTheme);
+    });
+    document.querySelectorAll('[data-pick-accent]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.pickAccent === activeAccent);
+    });
 
     const tokenInput = document.getElementById('input-portainer-token');
     const tokenHint = document.getElementById('portainer-token-hint');
@@ -1967,6 +2649,25 @@
     });
     document.getElementById('btn-rescan-media').addEventListener('click', triggerMediaRescan);
 
+    // Overview Widget Customizer
+    document.getElementById('btn-customize-overview').addEventListener('click', () => {
+      const box = document.getElementById('overview-customizer');
+      box.classList.toggle('hidden');
+      renderWidgetCustomizer();
+    });
+    document.getElementById('btn-close-overview-customizer').addEventListener('click', () => {
+      document.getElementById('overview-customizer').classList.add('hidden');
+    });
+    document.getElementById('btn-reset-overview-widgets').addEventListener('click', async () => {
+      const defaults = DEFAULT_OVERVIEW_WIDGETS.map((w) => ({ ...w }));
+      applyOverviewWidgets(defaults);
+      try {
+        await saveConfigPatch({ ui: { overviewWidgets: state.overviewWidgets } });
+      } catch {
+        // ignore save error if offline
+      }
+    });
+
     // Files View Controls
     document.getElementById('btn-files-view-list').addEventListener('click', () => {
       state.filesViewMode = 'list';
@@ -1981,7 +2682,11 @@
       renderFilesView();
     });
     document.getElementById('files-search').addEventListener('input', renderFilesView);
-    document.getElementById('btn-files-refresh').addEventListener('click', () => loadFilesDirectory(state.filesPath));
+    document.getElementById('btn-files-refresh').addEventListener('click', () => {
+      if (state.filesTrashMode) loadTrashView();
+      else loadFilesDirectory(state.filesPath);
+    });
+    document.getElementById('btn-files-trash').addEventListener('click', loadTrashView);
     document.getElementById('btn-files-mkdir').addEventListener('click', async () => {
       const name = prompt('Name des neuen Ordners:');
       if (!name || !name.trim()) return;
@@ -2003,17 +2708,117 @@
       e.target.value = '';
     });
 
-    // Drag & Drop Upload
+    // External OS Drag & Drop Upload (ignores internal file moves)
     const dropzone = document.getElementById('files-dropzone');
     dropzone.addEventListener('dragover', (e) => {
+      const isInternal = Array.from(e.dataTransfer?.types || []).includes('application/x-hs-paths');
+      if (isInternal) return;
       e.preventDefault();
-      if (state.filesPath !== '/') dropzone.classList.add('drop-active');
+      if (!state.filesTrashMode && state.filesPath !== '/') dropzone.classList.add('drop-active');
     });
-    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drop-active'));
+    dropzone.addEventListener('dragleave', (e) => {
+      if (!dropzone.contains(e.relatedTarget)) dropzone.classList.remove('drop-active');
+    });
     dropzone.addEventListener('drop', (e) => {
+      const isInternal = Array.from(e.dataTransfer?.types || []).includes('application/x-hs-paths');
+      if (isInternal) return;
       e.preventDefault();
       dropzone.classList.remove('drop-active');
-      if (e.dataTransfer?.files?.length) uploadFilesWithProgress(e.dataTransfer.files);
+      if (!state.filesTrashMode && e.dataTransfer?.files?.length) {
+        uploadFilesWithProgress(e.dataTransfer.files);
+      }
+    });
+
+    // Internal Drag & Drop Move (onto folders, breadcrumbs, sidebar roots, or Trash)
+    const filesSection = document.getElementById('view-files');
+    let lastDropHighlight = null;
+    const clearDropHighlight = () => {
+      if (lastDropHighlight) {
+        lastDropHighlight.classList.remove('drop-target-hover');
+        lastDropHighlight = null;
+      }
+    };
+    filesSection.addEventListener('dragstart', (e) => {
+      const dragEl = e.target.closest('[data-drag-path]');
+      if (!dragEl || e.target.closest('input, button, a')) {
+        if (!dragEl) return;
+      }
+      if (!dragEl) return;
+      const draggedPath = dragEl.dataset.dragPath;
+      const sources = state.selectedFiles.has(draggedPath) && state.selectedFiles.size > 1
+        ? [...state.selectedFiles]
+        : [draggedPath];
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('application/x-hs-paths', JSON.stringify(sources));
+    });
+    filesSection.addEventListener('dragend', clearDropHighlight);
+    filesSection.addEventListener('dragover', (e) => {
+      const isInternal = Array.from(e.dataTransfer?.types || []).includes('application/x-hs-paths');
+      if (!isInternal) return;
+      const target = e.target.closest('[data-drop-dir], #btn-files-trash');
+      if (!target) {
+        clearDropHighlight();
+        return;
+      }
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (lastDropHighlight !== target) {
+        clearDropHighlight();
+        target.classList.add('drop-target-hover');
+        lastDropHighlight = target;
+      }
+    });
+    filesSection.addEventListener('dragleave', (e) => {
+      const target = e.target.closest('[data-drop-dir], #btn-files-trash');
+      if (target && !target.contains(e.relatedTarget)) {
+        target.classList.remove('drop-target-hover');
+        if (lastDropHighlight === target) lastDropHighlight = null;
+      }
+    });
+    filesSection.addEventListener('drop', async (e) => {
+      const isInternal = Array.from(e.dataTransfer?.types || []).includes('application/x-hs-paths');
+      if (!isInternal) return;
+      const target = e.target.closest('[data-drop-dir], #btn-files-trash');
+      clearDropHighlight();
+      if (!target) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      let paths = [];
+      try {
+        paths = JSON.parse(e.dataTransfer.getData('application/x-hs-paths') || '[]');
+      } catch {
+        paths = [];
+      }
+      if (!Array.isArray(paths) || paths.length === 0) return;
+
+      if (target.id === 'btn-files-trash') {
+        const res = await fetch('/api/files/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paths })
+        });
+        if (!res.ok) {
+          alert((await res.json().catch(() => ({}))).error || 'Verschieben in den Papierkorb fehlgeschlagen');
+          return;
+        }
+        loadFilesDirectory(state.filesPath);
+        refreshTrashBadge();
+        return;
+      }
+
+      const destDir = target.dataset.dropDir;
+      if (!destDir || paths.includes(destDir)) return;
+      const res = await fetch('/api/files/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sources: paths, destDir })
+      });
+      if (!res.ok) {
+        alert((await res.json().catch(() => ({}))).error || 'Verschieben fehlgeschlagen');
+        return;
+      }
+      loadFilesDirectory(state.filesPath);
     });
 
     // Select All & Bulk Actions
@@ -2025,34 +2830,54 @@
       updateBulkBar();
     });
 
-    const openCopyMove = (action) => {
-      document.getElementById('cm-action').value = action;
-      document.getElementById('modal-cm-title').textContent = action === 'move' ? 'Auswahl verschieben nach…' : 'Auswahl kopieren nach…';
-      document.getElementById('cm-dest-input').value = state.filesPath;
-      const roots = state.filesListing?.roots || [];
-      document.getElementById('cm-quick-roots').innerHTML = roots
-        .map((r) => `<button type="button" class="btn-secondary btn-sm" data-cm-root="${escapeHtml(r.path)}">${escapeHtml(r.name)}</button>`)
-        .join('');
-      openModal('modal-copy-move');
-    };
-    document.getElementById('btn-bulk-copy').addEventListener('click', () => openCopyMove('copy'));
-    document.getElementById('btn-bulk-move').addEventListener('click', () => openCopyMove('move'));
+    document.getElementById('btn-bulk-copy').addEventListener('click', () => openCopyMoveModal('copy'));
+    document.getElementById('btn-bulk-move').addEventListener('click', () => openCopyMoveModal('move'));
+    document.getElementById('cm-btn-mkdir').addEventListener('click', async () => {
+      const parentPath = state.copyMoveBrowserPath;
+      if (!parentPath || parentPath === '/') return;
+      const name = prompt(`Neuen Zielordner in "${parentPath}" erstellen:`);
+      if (!name || !name.trim()) return;
+      const res = await fetch('/api/files/mkdir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parentPath, name: name.trim() })
+      });
+      if (!res.ok) {
+        alert((await res.json().catch(() => ({}))).error || 'Ordner konnte nicht erstellt werden');
+        return;
+      }
+      const created = await res.json();
+      await loadCopyMoveDirs(created.path || parentPath);
+      if (parentPath === state.filesPath) loadFilesDirectory(state.filesPath);
+    });
+
     document.getElementById('form-copy-move').addEventListener('submit', async (e) => {
       e.preventDefault();
       const action = document.getElementById('cm-action').value;
       const destDir = document.getElementById('cm-dest-input').value.trim();
-      const sources = [...state.selectedFiles];
-      const res = await fetch(`/api/files/${action}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sources, destDir })
-      });
-      if (!res.ok) {
-        const d = await res.json();
-        return alert(d.error || 'Aktion fehlgeschlagen');
+      const sources = state.copyMoveSources.length > 0 ? state.copyMoveSources : [...state.selectedFiles];
+      if (sources.length === 0 || !destDir) return;
+
+      const submitBtn = document.getElementById('cm-submit-btn');
+      const prevText = submitBtn.textContent;
+      submitBtn.disabled = true;
+      submitBtn.textContent = action === 'move' ? 'Verschiebe…' : 'Kopiere…';
+      try {
+        const res = await fetch(`/api/files/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sources, destDir })
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          return alert(d.error || 'Aktion fehlgeschlagen');
+        }
+        closeModal('modal-copy-move');
+        loadFilesDirectory(state.filesPath);
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = prevText;
       }
-      closeModal('modal-copy-move');
-      loadFilesDirectory(state.filesPath);
     });
 
     document.getElementById('btn-bulk-zip').addEventListener('click', () => {
@@ -2062,7 +2887,8 @@
 
     document.getElementById('btn-bulk-delete').addEventListener('click', async () => {
       const paths = [...state.selectedFiles];
-      if (!confirm(`${paths.length} ausgewählte Einträge wirklich unwiderruflich löschen?`)) return;
+      if (paths.length === 0) return;
+      if (!confirm(`${paths.length} ausgewählte Einträge in den Papierkorb verschieben?`)) return;
       const res = await fetch(`/api/files/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2070,10 +2896,55 @@
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
-        alert(d.error || 'Löschen fehlgeschlagen');
+        alert(d.error || 'Verschieben in den Papierkorb fehlgeschlagen');
         return;
       }
       loadFilesDirectory(state.filesPath);
+      refreshTrashBadge();
+    });
+
+    // Safe Trash Controls
+    document.getElementById('trash-select-all').addEventListener('change', (e) => {
+      const items = state.trashListing?.items || [];
+      if (e.target.checked) items.forEach((i) => state.selectedTrashKeys.add(i.trashKey));
+      else state.selectedTrashKeys.clear();
+      renderTrashView();
+    });
+    document.getElementById('btn-trash-restore-sel').addEventListener('click', async () => {
+      const keys = [...state.selectedTrashKeys];
+      if (keys.length === 0) return;
+      const res = await fetch('/api/files/trash/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trashKeys: keys })
+      });
+      if (!res.ok) alert((await res.json().catch(() => ({}))).error || 'Wiederherstellen fehlgeschlagen');
+      await loadTrashView();
+      refreshTrashBadge();
+    });
+    document.getElementById('btn-trash-delete-sel').addEventListener('click', async () => {
+      const keys = [...state.selectedTrashKeys];
+      if (keys.length === 0) return;
+      if (!confirm(`${keys.length} Einträge endgültig löschen? Dies kann nicht rückgängig gemacht werden.`)) return;
+      const res = await fetch('/api/files/trash/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trashKeys: keys })
+      });
+      if (!res.ok) alert((await res.json().catch(() => ({}))).error || 'Endgültiges Löschen fehlgeschlagen');
+      await loadTrashView();
+      refreshTrashBadge();
+    });
+    document.getElementById('btn-trash-empty').addEventListener('click', async () => {
+      if (!confirm('Gesamten Papierkorb endgültig leeren? Alle darin befindlichen Dateien werden dauerhaft gelöscht.')) return;
+      const res = await fetch('/api/files/trash/empty', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      if (!res.ok) alert((await res.json().catch(() => ({}))).error || 'Papierkorb leeren fehlgeschlagen');
+      await loadTrashView();
+      refreshTrashBadge();
     });
 
     // Text Editor Save
@@ -2124,8 +2995,12 @@
     };
     window.__openComposeModal = openComposeModal;
 
+    const defaultComposeSample = 'services:\n  mein-dienst:\n    image: nginx:alpine\n    restart: unless-stopped\n    ports:\n      - "8089:80"\n';
     document.getElementById('btn-open-compose-modal').addEventListener('click', () => {
-      openComposeModal('', 'services:\n  mein-dienst:\n    image: nginx:alpine\n    restart: unless-stopped\n    ports:\n      - "8089:80"\n');
+      openComposeModal('', defaultComposeSample);
+    });
+    document.getElementById('btn-portainer-new-stack').addEventListener('click', () => {
+      openComposeModal('', defaultComposeSample);
     });
 
     document.getElementById('btn-compose-copy').addEventListener('click', async () => {
@@ -2428,6 +3303,118 @@
       }
     });
 
+    // Storage Analyzer Controls
+    document.getElementById('btn-analyzer-scan').addEventListener('click', async () => {
+      const checked = Array.from(document.querySelectorAll('.analyzer-root-cb:checked')).map((el) => el.value);
+      const hasCheckboxes = document.querySelectorAll('.analyzer-root-cb').length > 0;
+      if (hasCheckboxes && checked.length === 0) {
+        alert('Bitte wähle mindestens einen Speicher-Pfad für die Analyse aus.');
+        return;
+      }
+      const res = await fetch('/api/analyzer/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: checked })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || 'Analyse konnte nicht gestartet werden');
+        return;
+      }
+      state.analyzerData = data;
+      renderAnalyzerView();
+      loadAnalyzerStatus();
+    });
+    document.querySelectorAll('[data-ana-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.analyzerTab = btn.dataset.anaTab;
+        renderAnalyzerView();
+      });
+    });
+
+    // Automation, Watchdog, Scheduler & Wake-on-LAN
+    document.getElementById('wd-mode').addEventListener('change', () => {
+      const selected = state.automationData?.watchdog?.containerNames || [];
+      renderWatchdogContainerPicker(selected);
+    });
+
+    document.getElementById('form-watchdog').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msgEl = document.getElementById('wd-save-msg');
+      const containerNames = Array.from(document.querySelectorAll('.wd-container-cb:checked')).map((el) => el.value);
+      const payload = {
+        enabled: document.getElementById('wd-enabled').checked,
+        mode: document.getElementById('wd-mode').value,
+        cooldownSeconds: Number(document.getElementById('wd-cooldown').value) || 180,
+        restartUnhealthy: document.getElementById('wd-unhealthy').checked,
+        restartExitedError: document.getElementById('wd-exited').checked,
+        containerNames
+      };
+      const res = await fetch('/api/automation/watchdog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        msgEl.textContent = `Fehler: ${data.error || 'Speichern fehlgeschlagen'}`;
+        return;
+      }
+      state.automationData = data;
+      renderAutomationView();
+      msgEl.textContent = 'Watchdog gespeichert!';
+      setTimeout(() => { msgEl.textContent = ''; }, 2500);
+    });
+
+    document.getElementById('form-schedule-add').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const current = [...(state.automationData?.schedules || [])];
+      current.push({
+        name: document.getElementById('sched-name').value.trim(),
+        type: document.getElementById('sched-type').value,
+        target: document.getElementById('sched-target').value.trim(),
+        timeHHMM: document.getElementById('sched-time').value || '03:00',
+        enabled: true
+      });
+      const res = await fetch('/api/automation/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schedules: current })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return alert(data.error || 'Zeitplan konnte nicht gespeichert werden');
+      state.automationData = data;
+      document.getElementById('form-schedule-add').reset();
+      document.getElementById('sched-time').value = '03:00';
+      renderAutomationView();
+    });
+
+    document.getElementById('form-wol-add').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const current = [...(state.automationData?.wolDevices || [])];
+      current.push({
+        name: document.getElementById('wol-name').value.trim(),
+        mac: document.getElementById('wol-mac').value.trim(),
+        broadcastIp: document.getElementById('wol-broadcast').value.trim() || '255.255.255.255',
+        port: Number(document.getElementById('wol-port').value) || 9
+      });
+      const res = await fetch('/api/wol/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ devices: current })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return alert(data.error || 'Gerät konnte nicht gespeichert werden');
+      if (!state.automationData) state.automationData = { watchdog: {}, schedules: [], events: [], wolDevices: [] };
+      state.automationData.wolDevices = data.devices || [];
+      document.getElementById('form-wol-add').reset();
+      document.getElementById('wol-broadcast').value = '255.255.255.255';
+      document.getElementById('wol-port').value = '9';
+      renderAutomationView();
+    });
+
+    document.getElementById('btn-refresh-automation').addEventListener('click', loadAutomationState);
+
     // Modals close
     document.querySelectorAll('[data-close-modal]').forEach((btn) => {
       btn.addEventListener('click', () => closeModal(btn.dataset.closeModal));
@@ -2439,19 +3426,260 @@
     });
 
     // Delegated clicks & changes
-    document.addEventListener('change', (e) => {
+    document.addEventListener('change', async (e) => {
       const cb = e.target.closest('.file-select-cb');
       if (cb) {
         if (cb.checked) state.selectedFiles.add(cb.dataset.filePath);
         else state.selectedFiles.delete(cb.dataset.filePath);
         updateBulkBar();
+        return;
+      }
+
+      const trashCb = e.target.closest('.trash-select-cb');
+      if (trashCb) {
+        if (trashCb.checked) state.selectedTrashKeys.add(trashCb.dataset.trashKey);
+        else state.selectedTrashKeys.delete(trashCb.dataset.trashKey);
+        updateTrashBulkBar();
+        return;
+      }
+
+      const rootCb = e.target.closest('.analyzer-root-cb');
+      if (rootCb) {
+        if (!state.analyzerSelectedRoots) state.analyzerSelectedRoots = new Set();
+        if (rootCb.checked) state.analyzerSelectedRoots.add(rootCb.value);
+        else state.analyzerSelectedRoots.delete(rootCb.value);
+        return;
+      }
+
+      const widgetToggle = e.target.closest('[data-toggle-widget]');
+      if (widgetToggle) {
+        const wid = widgetToggle.dataset.toggleWidget;
+        const next = state.overviewWidgets.map((w) => (w.id === wid ? { ...w, visible: widgetToggle.checked } : w));
+        applyOverviewWidgets(next);
+        try {
+          await saveConfigPatch({ ui: { overviewWidgets: state.overviewWidgets } });
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      const schedToggle = e.target.closest('[data-sched-toggle]');
+      if (schedToggle && state.automationData) {
+        const sid = schedToggle.dataset.schedToggle;
+        const next = (state.automationData.schedules || []).map((s) => (s.id === sid ? { ...s, enabled: schedToggle.checked } : s));
+        const res = await fetch('/api/automation/schedules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ schedules: next })
+        });
+        if (res.ok) {
+          state.automationData = await res.json();
+          renderAutomationView();
+        }
       }
     });
 
     document.addEventListener('click', async (e) => {
-      const cmRootBtn = e.target.closest('[data-cm-root]');
-      if (cmRootBtn) {
-        document.getElementById('cm-dest-input').value = cmRootBtn.dataset.cmRoot;
+      const themePick = e.target.closest('[data-pick-theme]');
+      if (themePick) {
+        applyTheme(themePick.dataset.pickTheme, true);
+        const msg = document.getElementById('theme-save-msg');
+        if (msg) {
+          msg.textContent = 'Design gespeichert!';
+          setTimeout(() => { msg.textContent = ''; }, 2000);
+        }
+        return;
+      }
+
+      const accentPick = e.target.closest('[data-pick-accent]');
+      if (accentPick) {
+        applyAccent(accentPick.dataset.pickAccent, true);
+        const msg = document.getElementById('theme-save-msg');
+        if (msg) {
+          msg.textContent = 'Akzentfarbe gespeichert!';
+          setTimeout(() => { msg.textContent = ''; }, 2000);
+        }
+        return;
+      }
+
+      const moveWidgetBtn = e.target.closest('[data-move-widget]');
+      if (moveWidgetBtn) {
+        const wid = moveWidgetBtn.dataset.moveWidget;
+        const dir = Number(moveWidgetBtn.dataset.dir);
+        const idx = state.overviewWidgets.findIndex((w) => w.id === wid);
+        const targetIdx = idx + dir;
+        if (idx >= 0 && targetIdx >= 0 && targetIdx < state.overviewWidgets.length) {
+          const next = [...state.overviewWidgets];
+          [next[idx], next[targetIdx]] = [next[targetIdx], next[idx]];
+          applyOverviewWidgets(next);
+          try {
+            await saveConfigPatch({ ui: { overviewWidgets: state.overviewWidgets } });
+          } catch {
+            // ignore
+          }
+        }
+        return;
+      }
+
+      const cmBrowseBtn = e.target.closest('[data-cm-browse]');
+      if (cmBrowseBtn) {
+        loadCopyMoveDirs(cmBrowseBtn.dataset.cmBrowse);
+        return;
+      }
+
+      const moveSingleBtn = e.target.closest('[data-move-single]');
+      if (moveSingleBtn) {
+        openCopyMoveModal('move', [moveSingleBtn.dataset.moveSingle]);
+        return;
+      }
+
+      const trashRestoreBtn = e.target.closest('[data-trash-restore]');
+      if (trashRestoreBtn) {
+        const res = await fetch('/api/files/trash/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ trashKeys: [trashRestoreBtn.dataset.trashRestore] })
+        });
+        if (!res.ok) alert((await res.json().catch(() => ({}))).error || 'Wiederherstellen fehlgeschlagen');
+        await loadTrashView();
+        refreshTrashBadge();
+        return;
+      }
+
+      const trashDelBtn = e.target.closest('[data-trash-delete]');
+      if (trashDelBtn) {
+        if (!confirm(`"${trashDelBtn.dataset.trashName}" endgültig löschen? Dies kann nicht rückgängig gemacht werden.`)) return;
+        const res = await fetch('/api/files/trash/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ trashKeys: [trashDelBtn.dataset.trashDelete] })
+        });
+        if (!res.ok) alert((await res.json().catch(() => ({}))).error || 'Endgültiges Löschen fehlgeschlagen');
+        await loadTrashView();
+        refreshTrashBadge();
+        return;
+      }
+
+      const trashDupGroupBtn = e.target.closest('[data-trash-dup-group]');
+      if (trashDupGroupBtn) {
+        const idx = Number(trashDupGroupBtn.dataset.trashDupGroup);
+        const group = state.analyzerData?.duplicateGroups?.[idx];
+        if (!group || group.files.length < 2) return;
+        const extraPaths = group.files.slice(1).map((f) => f.path);
+        if (!confirm(`${extraPaths.length} doppelte Kopie(n) in den Papierkorb verschieben? ("${group.files[0].path}" bleibt erhalten)`)) return;
+        const res = await fetch('/api/files/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paths: extraPaths })
+        });
+        if (!res.ok) {
+          alert((await res.json().catch(() => ({}))).error || 'Verschieben fehlgeschlagen');
+          return;
+        }
+        state.analyzerData.duplicateGroups.splice(idx, 1);
+        renderAnalyzerView();
+        refreshTrashBadge();
+        return;
+      }
+
+      const trashSingleAnalyzerBtn = e.target.closest('[data-trash-single-path]');
+      if (trashSingleAnalyzerBtn) {
+        const targetPath = trashSingleAnalyzerBtn.dataset.trashSinglePath;
+        const name = trashSingleAnalyzerBtn.dataset.trashName || targetPath;
+        if (!confirm(`"${name}" in den Papierkorb verschieben?`)) return;
+        const res = await fetch('/api/files/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paths: [targetPath] })
+        });
+        if (!res.ok) {
+          alert((await res.json().catch(() => ({}))).error || 'Verschieben fehlgeschlagen');
+          return;
+        }
+        if (state.analyzerData) {
+          state.analyzerData.largestFiles = (state.analyzerData.largestFiles || []).filter((f) => f.path !== targetPath);
+          state.analyzerData.duplicateGroups = (state.analyzerData.duplicateGroups || [])
+            .map((g) => ({ ...g, files: g.files.filter((f) => f.path !== targetPath) }))
+            .filter((g) => g.files.length >= 2);
+          renderAnalyzerView();
+        }
+        refreshTrashBadge();
+        return;
+      }
+
+      const openAnalyzerDirBtn = e.target.closest('[data-open-analyzer-dir]');
+      if (openAnalyzerDirBtn) {
+        switchView('files');
+        loadFilesDirectory(openAnalyzerDirBtn.dataset.openAnalyzerDir);
+        return;
+      }
+
+      const schedRunBtn = e.target.closest('[data-sched-run]');
+      if (schedRunBtn) {
+        schedRunBtn.disabled = true;
+        try {
+          const res = await fetch(`/api/automation/schedules/${encodeURIComponent(schedRunBtn.dataset.schedRun)}/run`, { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) alert(data.error || 'Ausführung fehlgeschlagen');
+          else {
+            state.automationData = data;
+            renderAutomationView();
+          }
+        } finally {
+          schedRunBtn.disabled = false;
+        }
+        return;
+      }
+
+      const schedDelBtn = e.target.closest('[data-sched-del]');
+      if (schedDelBtn && state.automationData) {
+        const sid = schedDelBtn.dataset.schedDel;
+        const next = (state.automationData.schedules || []).filter((s) => s.id !== sid);
+        const res = await fetch('/api/automation/schedules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ schedules: next })
+        });
+        if (res.ok) {
+          state.automationData = await res.json();
+          renderAutomationView();
+        }
+        return;
+      }
+
+      const wolWakeBtn = e.target.closest('[data-wol-wake]');
+      if (wolWakeBtn) {
+        wolWakeBtn.disabled = true;
+        try {
+          const res = await fetch('/api/wol/wake', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: wolWakeBtn.dataset.wolWake })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) alert(data.error || 'Wake-on-LAN fehlgeschlagen');
+          else await loadAutomationState();
+        } finally {
+          wolWakeBtn.disabled = false;
+        }
+        return;
+      }
+
+      const wolDelBtn = e.target.closest('[data-wol-del]');
+      if (wolDelBtn && state.automationData) {
+        const did = wolDelBtn.dataset.wolDel;
+        const next = (state.automationData.wolDevices || []).filter((d) => d.id !== did);
+        const res = await fetch('/api/wol/devices', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ devices: next })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          state.automationData.wolDevices = data.devices || [];
+          renderAutomationView();
+        }
         return;
       }
 
@@ -2513,7 +3741,7 @@
 
       const delFileBtn = e.target.closest('[data-delete-file]');
       if (delFileBtn) {
-        if (!confirm(`"${delFileBtn.dataset.fileName}" wirklich unwiderruflich löschen?`)) return;
+        if (!confirm(`"${delFileBtn.dataset.fileName}" in den Papierkorb verschieben?`)) return;
         const res = await fetch(`/api/files/delete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2521,10 +3749,11 @@
         });
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
-          alert(d.error || 'Löschen fehlgeschlagen');
+          alert(d.error || 'Verschieben in den Papierkorb fehlgeschlagen');
           return;
         }
         loadFilesDirectory(state.filesPath);
+        refreshTrashBadge();
         return;
       }
 

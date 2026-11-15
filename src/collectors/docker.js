@@ -198,6 +198,7 @@ async function collectDockerContainers() {
         fullId: c.Id,
         name,
         stackName: c.Labels?.['com.docker.compose.project'] || c.Labels?.['io.portainer.stack.name'] || null,
+        autohealLabel: c.Labels?.['com.homeserver.autoheal'] === 'true' || c.Labels?.autoheal === 'true',
         image: c.Image,
         state: c.State,
         statusText: c.Status,

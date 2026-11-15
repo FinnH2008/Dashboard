@@ -368,8 +368,250 @@ async function copyOrMoveLiveItems(sources, destDir, move = false, configMediaPa
   return { ok: true, count: sources.length };
 }
 
-async function deleteLiveItems(paths, configMediaPaths = []) {
+const TRASH_DIR_NAME = '.homeserver-trash';
+const TRASH_MANIFEST = 'manifest.json';
+
+function findOwningRoot(realPath, roots) {
+  let best = null;
+  for (const r of roots) {
+    if (realPath === r || realPath.startsWith(r + path.sep)) {
+      if (!best || r.length > best.length) best = r;
+    }
+  }
+  return best;
+}
+
+function getTrashDirForRoot(rootPath) {
+  return path.join(rootPath, TRASH_DIR_NAME);
+}
+
+async function readTrashManifest(rootPath) {
+  const manifestPath = path.join(getTrashDirForRoot(rootPath), TRASH_MANIFEST);
+  try {
+    const raw = await fsp.readFile(manifestPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeTrashManifest(rootPath, entries) {
+  const trashDir = getTrashDirForRoot(rootPath);
+  await fsp.mkdir(trashDir, { recursive: true });
+  const manifestPath = path.join(trashDir, TRASH_MANIFEST);
+  await fsp.writeFile(manifestPath, JSON.stringify(entries, null, 2), 'utf8');
+}
+
+async function listDirectoriesOnly(requestedPath = '/', configMediaPaths = []) {
+  const roots = getAllowedRoots(configMediaPaths);
+  if (!requestedPath || requestedPath === '/') {
+    return {
+      currentPath: '/',
+      parentPath: null,
+      dirs: roots.map((r) => ({ name: path.basename(r) || r, path: r }))
+    };
+  }
+  const realDir = assertAllowedPath(requestedPath, roots);
+  const st = await statExisting(realDir);
+  if (!st.isDirectory()) {
+    const err = new Error('Pfad ist kein Verzeichnis.');
+    err.statusCode = 400;
+    throw err;
+  }
+  const entries = await fsp.readdir(realDir, { withFileTypes: true });
+  const dirs = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith('.') || entry.name === 'lost+found' || entry.name === '@eaDir') continue;
+    dirs.push({
+      name: entry.name,
+      path: path.join(realDir, entry.name)
+    });
+  }
+  dirs.sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+  const isRoot = roots.includes(realDir);
+  return {
+    currentPath: realDir,
+    parentPath: isRoot ? '/' : path.dirname(realDir),
+    dirs
+  };
+}
+
+async function safeRename(src, dest) {
+  try {
+    await fsp.rename(src, dest);
+  } catch (err) {
+    if (err.code === 'EXDEV') {
+      await fsp.cp(src, dest, { recursive: true });
+      await fsp.rm(src, { recursive: true, force: false });
+    } else {
+      throw err;
+    }
+  }
+}
+
+async function moveItemsToTrash(paths, configMediaPaths = []) {
   if (!ALLOW_WRITE) throw new Error('Schreibzugriff ist deaktiviert.');
+  const list = Array.isArray(paths) ? paths : [paths];
+  const roots = getAllowedRoots(configMediaPaths);
+  const grouped = new Map();
+  let movedCount = 0;
+
+  for (const targetPath of list) {
+    const realTarget = assertAllowedPath(targetPath, roots);
+    const st = await statExisting(realTarget);
+    if (roots.includes(realTarget)) throw new Error('Stammordner kann nicht gelöscht werden.');
+    const owningRoot = findOwningRoot(realTarget, roots);
+    if (!owningRoot) throw new Error('Kein passendes Laufwerk gefunden.');
+    const trashDir = getTrashDirForRoot(owningRoot);
+    if (realTarget === trashDir || realTarget.startsWith(trashDir + path.sep)) {
+      throw new Error('Eintrag liegt bereits im Papierkorb.');
+    }
+
+    await fsp.mkdir(trashDir, { recursive: true });
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${path.basename(realTarget)}`;
+    const dest = path.join(trashDir, id);
+    await safeRename(realTarget, dest);
+
+    if (!grouped.has(owningRoot)) {
+      grouped.set(owningRoot, await readTrashManifest(owningRoot));
+    }
+    grouped.get(owningRoot).push({
+      id,
+      name: path.basename(realTarget),
+      originalPath: realTarget,
+      rootPath: owningRoot,
+      isDirectory: st.isDirectory(),
+      sizeBytes: st.isDirectory() ? 0 : st.size,
+      deletedAt: new Date().toISOString()
+    });
+    movedCount += 1;
+  }
+
+  for (const [rootPath, entries] of grouped.entries()) {
+    await writeTrashManifest(rootPath, entries);
+  }
+  return { ok: true, trashed: movedCount };
+}
+
+async function listTrash(configMediaPaths = []) {
+  const roots = getAllowedRoots(configMediaPaths);
+  const all = [];
+  for (const rootPath of roots) {
+    const trashDir = getTrashDirForRoot(rootPath);
+    const manifest = await readTrashManifest(rootPath);
+    const valid = [];
+    for (const item of manifest) {
+      const storedPath = path.join(trashDir, item.id);
+      if (fs.existsSync(storedPath)) {
+        valid.push(item);
+        all.push({
+          ...item,
+          trashKey: `${rootPath}::${item.id}`
+        });
+      }
+    }
+    if (valid.length !== manifest.length) {
+      await writeTrashManifest(rootPath, valid);
+    }
+  }
+  all.sort((a, b) => String(b.deletedAt).localeCompare(String(a.deletedAt)));
+  return { allowWrite: ALLOW_WRITE, items: all };
+}
+
+async function restoreFromTrash(items, configMediaPaths = []) {
+  if (!ALLOW_WRITE) throw new Error('Schreibzugriff ist deaktiviert.');
+  const list = Array.isArray(items) ? items : [items];
+  const roots = getAllowedRoots(configMediaPaths);
+  let restored = 0;
+
+  for (const entry of list) {
+    const rawKey = typeof entry === 'string' ? entry : entry?.trashKey || '';
+    const [rootHint, id] = rawKey.includes('::') ? rawKey.split('::') : [null, rawKey];
+    if (!id) continue;
+
+    for (const rootPath of roots) {
+      if (rootHint && rootPath !== rootHint) continue;
+      const manifest = await readTrashManifest(rootPath);
+      const idx = manifest.findIndex((m) => m.id === id);
+      if (idx === -1) continue;
+
+      const meta = manifest[idx];
+      const storedPath = path.join(getTrashDirForRoot(rootPath), meta.id);
+      if (!fs.existsSync(storedPath)) {
+        manifest.splice(idx, 1);
+        await writeTrashManifest(rootPath, manifest);
+        continue;
+      }
+
+      const targetDir = path.dirname(meta.originalPath);
+      await fsp.mkdir(targetDir, { recursive: true });
+      let destPath = meta.originalPath;
+      if (fs.existsSync(destPath)) {
+        const ext = meta.isDirectory ? '' : path.extname(meta.name);
+        const base = meta.isDirectory ? meta.name : path.basename(meta.name, ext);
+        destPath = path.join(targetDir, `${base} (wiederhergestellt ${Date.now()})${ext}`);
+      }
+      await safeRename(storedPath, destPath);
+      manifest.splice(idx, 1);
+      await writeTrashManifest(rootPath, manifest);
+      restored += 1;
+      break;
+    }
+  }
+  return { ok: true, restored };
+}
+
+async function deleteTrashItems(items, configMediaPaths = []) {
+  if (!ALLOW_WRITE) throw new Error('Schreibzugriff ist deaktiviert.');
+  const list = Array.isArray(items) ? items : [items];
+  const roots = getAllowedRoots(configMediaPaths);
+  let removed = 0;
+
+  for (const entry of list) {
+    const rawKey = typeof entry === 'string' ? entry : entry?.trashKey || '';
+    const [rootHint, id] = rawKey.includes('::') ? rawKey.split('::') : [null, rawKey];
+    if (!id) continue;
+
+    for (const rootPath of roots) {
+      if (rootHint && rootPath !== rootHint) continue;
+      const manifest = await readTrashManifest(rootPath);
+      const idx = manifest.findIndex((m) => m.id === id);
+      if (idx === -1) continue;
+
+      const storedPath = path.join(getTrashDirForRoot(rootPath), id);
+      if (fs.existsSync(storedPath)) {
+        await fsp.rm(storedPath, { recursive: true, force: true });
+      }
+      manifest.splice(idx, 1);
+      await writeTrashManifest(rootPath, manifest);
+      removed += 1;
+      break;
+    }
+  }
+  return { ok: true, removed };
+}
+
+async function emptyTrash(configMediaPaths = []) {
+  if (!ALLOW_WRITE) throw new Error('Schreibzugriff ist deaktiviert.');
+  const roots = getAllowedRoots(configMediaPaths);
+  let removed = 0;
+  for (const rootPath of roots) {
+    const trashDir = getTrashDirForRoot(rootPath);
+    if (!fs.existsSync(trashDir)) continue;
+    const manifest = await readTrashManifest(rootPath);
+    removed += manifest.length;
+    await fsp.rm(trashDir, { recursive: true, force: true });
+  }
+  return { ok: true, removed };
+}
+
+async function deleteLiveItems(paths, configMediaPaths = [], permanent = false) {
+  if (!ALLOW_WRITE) throw new Error('Schreibzugriff ist deaktiviert.');
+  if (!permanent) {
+    return await moveItemsToTrash(paths, configMediaPaths);
+  }
   const list = Array.isArray(paths) ? paths : [paths];
   const roots = getAllowedRoots(configMediaPaths);
   for (const targetPath of list) {
@@ -411,22 +653,48 @@ async function writeLiveTextFile(targetPath, content, configMediaPaths = []) {
   return { ok: true };
 }
 
+function getCommonAncestorDir(absPaths) {
+  const dirs = absPaths.map((p) => path.dirname(p).split(path.sep));
+  let prefix = dirs[0];
+  for (let i = 1; i < dirs.length; i += 1) {
+    const cur = dirs[i];
+    let j = 0;
+    while (j < prefix.length && j < cur.length && prefix[j] === cur[j]) j += 1;
+    prefix = prefix.slice(0, j);
+  }
+  const joined = prefix.join(path.sep);
+  return joined || path.sep;
+}
+
 async function streamZipDownload(paths, res, configMediaPaths = []) {
   const list = Array.isArray(paths) ? paths : [paths];
-  if (list.length === 0) throw new Error('Keine Dateien ausgewählt');
+  if (list.length === 0) {
+    const err = new Error('Keine Dateien ausgewählt');
+    err.statusCode = 400;
+    throw err;
+  }
   const roots = getAllowedRoots(configMediaPaths);
-  const realItems = list.map((p) => assertAllowedPath(p, roots));
+  const realItems = [];
+  for (const p of list) {
+    const resolved = assertAllowedPath(p, roots);
+    await statExisting(resolved);
+    realItems.push(resolved);
+  }
 
-  const parentDir = path.dirname(realItems[0]);
-  const relNames = realItems.map((p) => path.relative(parentDir, p) || path.basename(p));
+  const baseDir = getCommonAncestorDir(realItems);
+  const relNames = realItems.map((p) => path.relative(baseDir, p) || path.basename(p));
+  const rawDownloadName = realItems.length === 1
+    ? `${path.basename(realItems[0]).replace(/[^a-zA-Z0-9._-]/g, '_')}.zip`
+    : 'homeserver-archiv.zip';
 
   res.writeHead(200, {
     'Content-Type': 'application/zip',
-    'Content-Disposition': 'attachment; filename="homeserver-archiv.zip"'
+    'Content-Disposition': `attachment; filename="${rawDownloadName}"`,
+    'X-Content-Type-Options': 'nosniff'
   });
 
   const zipProc = spawn('zip', ['-r', '-', ...relNames], {
-    cwd: parentDir,
+    cwd: baseDir,
     stdio: ['ignore', 'pipe', 'ignore']
   });
   zipProc.stdout.pipe(res);
@@ -458,12 +726,18 @@ async function extractLiveArchive(archivePath, configMediaPaths = []) {
 }
 
 module.exports = {
+  getAllowedRoots,
   listLiveDirectory,
+  listDirectoriesOnly,
   streamLiveFile,
   createLiveFolder,
   renameLiveItem,
   copyOrMoveLiveItems,
   deleteLiveItems,
+  listTrash,
+  restoreFromTrash,
+  deleteTrashItems,
+  emptyTrash,
   saveLiveUpload,
   readLiveTextFile,
   writeLiveTextFile,

@@ -40,11 +40,16 @@ const {
 const { getSmbStatus, applySmbShares } = require('./collectors/smb');
 const {
   listLiveDirectory,
+  listDirectoriesOnly,
   streamLiveFile,
   createLiveFolder,
   renameLiveItem,
   copyOrMoveLiveItems,
   deleteLiveItems,
+  listTrash,
+  restoreFromTrash,
+  deleteTrashItems,
+  emptyTrash,
   saveLiveUpload,
   readLiveTextFile,
   writeLiveTextFile,
@@ -58,6 +63,21 @@ const {
   controlPortainerStack,
   invalidatePortainerCache
 } = require('./collectors/portainer');
+const { startStorageAnalysis, getAnalysisStatus } = require('./collectors/analyzer');
+const {
+  getAutomationState,
+  saveWatchdogConfig,
+  saveSchedules,
+  runScheduleNow,
+  startWatchdogScheduler,
+  stopWatchdogScheduler
+} = require('./collectors/watchdog');
+const {
+  listWolDevices,
+  saveWolDevices,
+  sendMagicPacket,
+  wakeDeviceById
+} = require('./collectors/wol');
 const { loadConfig, getPublicConfig, saveConfig } = require('./store/services');
 
 const PORT = Number(process.env.PORT) || 3080;
@@ -353,6 +373,34 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, listing);
     }
 
+    if (req.method === 'GET' && pathname === '/api/files/dirs') {
+      const targetPath = url.searchParams.get('path') || '/';
+      const cfg = loadConfig();
+      return sendJson(res, 200, await listDirectoriesOnly(targetPath, cfg.mediaPaths));
+    }
+
+    if (req.method === 'GET' && pathname === '/api/files/trash') {
+      const cfg = loadConfig();
+      return sendJson(res, 200, await listTrash(cfg.mediaPaths));
+    }
+
+    if (req.method === 'POST' && pathname === '/api/files/trash/restore') {
+      const body = await readJsonBody(req);
+      const cfg = loadConfig();
+      return sendJson(res, 200, await restoreFromTrash(body.trashKeys || body.items || body.keys || [], cfg.mediaPaths));
+    }
+
+    if (req.method === 'POST' && pathname === '/api/files/trash/delete') {
+      const body = await readJsonBody(req);
+      const cfg = loadConfig();
+      return sendJson(res, 200, await deleteTrashItems(body.trashKeys || body.items || body.keys || [], cfg.mediaPaths));
+    }
+
+    if (req.method === 'POST' && pathname === '/api/files/trash/empty') {
+      const cfg = loadConfig();
+      return sendJson(res, 200, await emptyTrash(cfg.mediaPaths));
+    }
+
     if (req.method === 'GET' && pathname === '/api/files/raw') {
       const targetPath = url.searchParams.get('path') || '';
       const download = url.searchParams.get('download') === '1';
@@ -396,7 +444,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const targets = body.paths || (body.path ? [body.path] : []);
       const cfg = loadConfig();
-      const result = await deleteLiveItems(targets, cfg.mediaPaths);
+      const result = await deleteLiveItems(targets, cfg.mediaPaths, body.permanent === true);
       return sendJson(res, 200, result);
     }
 
@@ -418,6 +466,68 @@ const server = http.createServer(async (req, res) => {
       const buffer = await readRawBody(req);
       const cfg = loadConfig();
       return sendJson(res, 200, await saveLiveUpload(dir, filename, buffer, cfg.mediaPaths));
+    }
+
+    // ==================== SMART FEATURES (ANALYZER, WATCHDOG, WOL) ====================
+    if (req.method === 'GET' && pathname === '/api/analyzer/status') {
+      return sendJson(res, 200, getAnalysisStatus());
+    }
+
+    if (req.method === 'POST' && pathname === '/api/analyzer/scan') {
+      const body = await readJsonBody(req);
+      const cfg = loadConfig();
+      return sendJson(res, 200, startStorageAnalysis(body.paths || [], cfg.mediaPaths));
+    }
+
+    if (req.method === 'GET' && pathname === '/api/automation/state') {
+      return sendJson(res, 200, {
+        ...getAutomationState(),
+        wolDevices: listWolDevices()
+      });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/automation/watchdog') {
+      const body = await readJsonBody(req);
+      return sendJson(res, 200, {
+        ...saveWatchdogConfig(body),
+        wolDevices: listWolDevices()
+      });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/automation/schedules') {
+      const body = await readJsonBody(req);
+      return sendJson(res, 200, {
+        ...saveSchedules(body.schedules || []),
+        wolDevices: listWolDevices()
+      });
+    }
+
+    const schedRunMatch = pathname.match(/^\/api\/automation\/schedules\/([^/]+)\/run$/);
+    if (req.method === 'POST' && schedRunMatch) {
+      const schedId = safeDecodeParam(schedRunMatch[1]);
+      const stateAfter = await runScheduleNow(schedId, {
+        onMediaScan: () => buildSnapshot(true),
+        onStorageAnalysis: () => startStorageAnalysis([], loadConfig().mediaPaths)
+      });
+      return sendJson(res, 200, { ...stateAfter, wolDevices: listWolDevices() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/wol/devices') {
+      const body = await readJsonBody(req);
+      return sendJson(res, 200, { devices: saveWolDevices(body.devices || []) });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/wol/wake') {
+      const body = await readJsonBody(req);
+      if (body.id) {
+        return sendJson(res, 200, await wakeDeviceById(body.id));
+      }
+      return sendJson(res, 200, await sendMagicPacket({
+        mac: body.mac,
+        broadcastIp: body.broadcastIp,
+        port: body.port,
+        name: body.name || ''
+      }));
     }
 
     // ==================== STORAGE ADMIN & SMB ====================
@@ -571,6 +681,7 @@ process.on('unhandledRejection', (reason) => {
 
 function gracefulShutdown(signal) {
   console.log(`[Dashboard] ${signal} empfangen – beende Verbindungen sauber…`);
+  stopWatchdogScheduler();
   for (const res of activeSseResponses) {
     try {
       res.end();
@@ -589,5 +700,9 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 server.listen(PORT, HOST, () => {
+  startWatchdogScheduler({
+    onMediaScan: () => buildSnapshot(true),
+    onStorageAnalysis: () => startStorageAnalysis([], loadConfig().mediaPaths)
+  });
   console.log(`Homeserver Dashboard läuft auf http://${HOST}:${PORT}`);
 });

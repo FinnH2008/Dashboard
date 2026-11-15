@@ -1,12 +1,12 @@
 <!DOCTYPE html>
-<html lang="de" data-theme="dark">
+<html lang="de" data-theme="studio-dark" data-accent="blue">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Heimserver OS — CasaOS-Ersatz für Medien, Festplatten &amp; Portainer</title>
-  <meta name="description" content="Vollständiger CasaOS-Ersatz für Linux-Homeserver: Fotos, Videos, mehrere Festplatten, Dateimanager, App Store, Compose Stacks, Terminal &amp; SMB." />
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23d97e38' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='3' width='20' height='7' rx='2'/%3E%3Crect x='2' y='14' width='20' height='7' rx='2'/%3E%3Cline x1='6' y1='6.5' x2='6.01' y2='6.5'/%3E%3Cline x1='6' y1='17.5' x2='6.01' y2='17.5'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/styles.css?v=2" />
+  <title>Heimserver OS — Medien, Festplatten, Docker &amp; Smart-Features</title>
+  <meta name="description" content="Aufgeräumtes Homeserver-Dashboard für Linux: Medien, Festplatten, Dateimanager mit Papierkorb, Docker &amp; Portainer, Speicher-Analyse, Auto-Heal &amp; Wake-on-LAN." />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230a84ff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='3' width='20' height='7' rx='2'/%3E%3Crect x='2' y='14' width='20' height='7' rx='2'/%3E%3Cline x1='6' y1='6.5' x2='6.01' y2='6.5'/%3E%3Cline x1='6' y1='17.5' x2='6.01' y2='17.5'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/styles.css?v=3" />
 </head>
 <body>
   <!-- Optional Auth Gate Overlay -->
@@ -57,7 +57,7 @@
       <nav class="nav-tabs" aria-label="Hauptnavigation">
         <div class="nav-section-label">System</div>
         <button class="nav-tab active" data-view="overview" id="tab-overview">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect></svg>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9" rx="1.5"></rect><rect x="14" y="3" width="7" height="5" rx="1.5"></rect><rect x="14" y="12" width="7" height="9" rx="1.5"></rect><rect x="3" y="16" width="7" height="5" rx="1.5"></rect></svg>
           <span>Übersicht</span>
         </button>
         <button class="nav-tab" data-view="files" id="tab-files">
@@ -66,18 +66,38 @@
         </button>
         <button class="nav-tab" data-view="storage" id="tab-storage">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14a9 3 0 0 0 18 0V5"></path><path d="M3 12a9 3 0 0 0 18 0"></path></svg>
-          <span>Festplatten &amp; SMB</span>
+          <span>Festplatten</span>
+        </button>
+        <button class="nav-tab" data-view="smb" id="tab-smb">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="14" width="20" height="7" rx="2"></rect><path d="M6 14V7a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v7"></path><line x1="6" y1="17.5" x2="6.01" y2="17.5"></line></svg>
+          <span>Freigaben (SMB)</span>
         </button>
 
-        <div class="nav-section-label" style="margin-top:10px;">Dienste</div>
+        <div class="nav-section-label">Apps &amp; Stacks</div>
         <button class="nav-tab" data-view="docker" id="tab-docker">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
-          <span>Docker &amp; Portainer</span>
+          <span>Container</span>
+        </button>
+        <button class="nav-tab" data-view="portainer" id="tab-portainer">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="6" rx="1.5"></rect><rect x="3" y="13" width="8" height="8" rx="1.5"></rect><rect x="13" y="13" width="8" height="8" rx="1.5"></rect></svg>
+          <span>Portainer &amp; Stacks</span>
         </button>
         <button class="nav-tab" data-view="appstore" id="tab-appstore">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg>
           <span>App Store</span>
         </button>
+
+        <div class="nav-section-label">Smart-Features</div>
+        <button class="nav-tab" data-view="analyzer" id="tab-analyzer">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"></path><path d="M22 12A10 10 0 0 0 12 2v10z"></path></svg>
+          <span>Speicher-Analyse</span>
+        </button>
+        <button class="nav-tab" data-view="automation" id="tab-automation">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
+          <span>Automation &amp; WoL</span>
+        </button>
+
+        <div class="nav-section-label">Konfiguration</div>
         <button class="nav-tab" data-view="settings" id="tab-settings">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
           <span>Einstellungen</span>
@@ -115,9 +135,10 @@
               <span id="live-status-text" class="hide-sm">Verbinde…</span>
             </button>
 
-            <button class="icon-btn" id="btn-theme" title="Hell / Dunkel umschalten" aria-label="Theme umschalten">
+            <button class="icon-btn" id="btn-theme" title="Theme wechseln (Studio Dark / Light / OLED / Slate / Indigo)" aria-label="Theme wechseln">
               <svg id="icon-sun" class="hidden" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
               <svg id="icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+              <span class="hide-sm" id="topbar-theme-name">Studio Dark</span>
             </button>
 
             <button class="icon-btn" id="btn-power" title="Server Neustart / Herunterfahren" aria-label="Power-Menü">
@@ -132,74 +153,104 @@
       <main class="main-content">
       <!-- ==================== VIEW: OVERVIEW ==================== -->
       <section class="view-section active" id="view-overview">
-        <div class="kpi-grid">
-          <article class="card kpi-card">
-            <div class="kpi-header">
-              <span class="kpi-label">Prozessor (CPU)</span>
-              <span class="kpi-badge mono" id="kpi-cpu-temp">— °C</span>
-            </div>
-            <div class="kpi-value-row">
-              <span class="kpi-value mono" id="kpi-cpu-val">0%</span>
-              <span class="kpi-sub mono" id="kpi-cpu-load">Load 0.00</span>
-            </div>
-            <div class="progress-track">
-              <div class="progress-fill fill-blue" id="kpi-cpu-bar" style="width: 0%"></div>
-            </div>
-            <p class="kpi-footnote" id="kpi-cpu-model">—</p>
-          </article>
-
-          <article class="card kpi-card">
-            <div class="kpi-header">
-              <span class="kpi-label">Arbeitsspeicher (RAM)</span>
-              <span class="kpi-badge mono" id="kpi-ram-pct">0%</span>
-            </div>
-            <div class="kpi-value-row">
-              <span class="kpi-value mono" id="kpi-ram-val">0 GiB</span>
-              <span class="kpi-sub mono" id="kpi-ram-total">von 0 GiB</span>
-            </div>
-            <div class="progress-track">
-              <div class="progress-fill fill-emerald" id="kpi-ram-bar" style="width: 0%"></div>
-            </div>
-            <p class="kpi-footnote" id="kpi-ram-cache">Cache: — · Swap: —</p>
-          </article>
-
-          <article class="card kpi-card">
-            <div class="kpi-header">
-              <span class="kpi-label">Netzwerk-Durchsatz</span>
-              <span class="kpi-badge mono" id="kpi-net-iface">—</span>
-            </div>
-            <div class="kpi-value-row net-split">
-              <div>
-                <span class="net-dir">↓ Empfangen</span>
-                <span class="kpi-value-sm mono" id="kpi-net-rx">0 MB/s</span>
-              </div>
-              <div>
-                <span class="net-dir">↑ Senden</span>
-                <span class="kpi-value-sm mono" id="kpi-net-tx">0 MB/s</span>
-              </div>
-            </div>
-            <div class="mini-bars" id="net-activity-bars" aria-hidden="true"></div>
-            <p class="kpi-footnote" id="kpi-net-total">Gesamt-Traffic: —</p>
-          </article>
-
-          <article class="card kpi-card">
-            <div class="kpi-header">
-              <span class="kpi-label">Speicher-Pool &amp; Docker</span>
-              <span class="kpi-badge status-ok" id="kpi-pool-health">Alle OK</span>
-            </div>
-            <div class="kpi-value-row">
-              <span class="kpi-value mono" id="kpi-pool-used">0 TB</span>
-              <span class="kpi-sub mono" id="kpi-pool-total">von 0 TB</span>
-            </div>
-            <div class="progress-track">
-              <div class="progress-fill fill-amber" id="kpi-pool-bar" style="width: 0%"></div>
-            </div>
-            <p class="kpi-footnote" id="kpi-pool-foot">0 Festplatten · 0 Container aktiv</p>
-          </article>
+        <div class="section-header">
+          <div>
+            <h2>System-Cockpit</h2>
+            <p class="section-subtitle">Kompakte Live-Übersicht — Widgets lassen sich jederzeit ein-/ausblenden und sortieren</p>
+          </div>
+          <div class="section-actions">
+            <button class="btn-secondary btn-sm" id="btn-customize-overview">Übersicht anpassen</button>
+          </div>
         </div>
 
-        <div class="split-grid">
-          <article class="card panel-card">
+        <!-- Collapsible Overview Widget Customizer -->
+        <article class="card panel-card hidden" id="overview-customizer">
+          <div class="panel-header">
+            <div>
+              <h2>Startseiten-Widgets anpassen</h2>
+              <p class="panel-subtitle">Änderungen werden dauerhaft gespeichert</p>
+            </div>
+            <div style="display:flex;gap:6px;">
+              <button class="btn-secondary btn-sm" id="btn-reset-overview-widgets">Standard wiederherstellen</button>
+              <button class="btn-primary btn-sm" id="btn-close-overview-customizer">Fertig</button>
+            </div>
+          </div>
+          <div class="widget-config-list" id="overview-widget-config-list"></div>
+        </article>
+
+        <!-- Ordered Widget Container -->
+        <div class="overview-widgets-container" id="overview-widgets-container">
+          <!-- Widget 1: KPIs -->
+          <div class="overview-widget span-12" data-widget-id="kpis">
+            <div class="kpi-grid">
+              <article class="card kpi-card">
+                <div class="kpi-header">
+                  <span class="kpi-label">Prozessor (CPU)</span>
+                  <span class="kpi-badge mono" id="kpi-cpu-temp">— °C</span>
+                </div>
+                <div class="kpi-value-row">
+                  <span class="kpi-value mono" id="kpi-cpu-val">0%</span>
+                  <span class="kpi-sub mono" id="kpi-cpu-load">Load 0.00</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-fill fill-blue" id="kpi-cpu-bar" style="width: 0%"></div>
+                </div>
+                <p class="kpi-footnote" id="kpi-cpu-model">—</p>
+              </article>
+
+              <article class="card kpi-card">
+                <div class="kpi-header">
+                  <span class="kpi-label">Arbeitsspeicher (RAM)</span>
+                  <span class="kpi-badge mono" id="kpi-ram-pct">0%</span>
+                </div>
+                <div class="kpi-value-row">
+                  <span class="kpi-value mono" id="kpi-ram-val">0 GiB</span>
+                  <span class="kpi-sub mono" id="kpi-ram-total">von 0 GiB</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-fill fill-emerald" id="kpi-ram-bar" style="width: 0%"></div>
+                </div>
+                <p class="kpi-footnote" id="kpi-ram-cache">Cache: — · Swap: —</p>
+              </article>
+
+              <article class="card kpi-card">
+                <div class="kpi-header">
+                  <span class="kpi-label">Netzwerk-Durchsatz</span>
+                  <span class="kpi-badge mono" id="kpi-net-iface">—</span>
+                </div>
+                <div class="kpi-value-row net-split">
+                  <div>
+                    <span class="net-dir">↓ Empfangen</span>
+                    <span class="kpi-value-sm mono" id="kpi-net-rx">0 MB/s</span>
+                  </div>
+                  <div>
+                    <span class="net-dir">↑ Senden</span>
+                    <span class="kpi-value-sm mono" id="kpi-net-tx">0 MB/s</span>
+                  </div>
+                </div>
+                <div class="mini-bars" id="net-activity-bars" aria-hidden="true"></div>
+                <p class="kpi-footnote" id="kpi-net-total">Gesamt-Traffic: —</p>
+              </article>
+
+              <article class="card kpi-card">
+                <div class="kpi-header">
+                  <span class="kpi-label">Speicher-Pool &amp; Docker</span>
+                  <span class="kpi-badge status-ok" id="kpi-pool-health">Alle OK</span>
+                </div>
+                <div class="kpi-value-row">
+                  <span class="kpi-value mono" id="kpi-pool-used">0 TB</span>
+                  <span class="kpi-sub mono" id="kpi-pool-total">von 0 TB</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-fill fill-amber" id="kpi-pool-bar" style="width: 0%"></div>
+                </div>
+                <p class="kpi-footnote" id="kpi-pool-foot">0 Festplatten · 0 Container aktiv</p>
+              </article>
+            </div>
+          </div>
+
+          <!-- Widget 2: Telemetry -->
+          <article class="card panel-card overview-widget span-7" data-widget-id="telemetry">
             <div class="panel-header">
               <div>
                 <h2>Echtzeit-Telemetrie</h2>
@@ -217,14 +268,15 @@
             <div class="chart-legend" id="telemetry-legend"></div>
           </article>
 
-          <article class="card panel-card">
+          <!-- Widget 3: Media Donut -->
+          <article class="card panel-card overview-widget span-5" data-widget-id="media">
             <div class="panel-header">
               <div>
                 <h2>Mediathek-Verteilung</h2>
                 <p class="panel-subtitle" id="media-summary-subtitle">Fotos, Videos, Musik &amp; Backups</p>
               </div>
               <div style="display:flex;gap:6px;">
-                <button class="btn-secondary btn-sm" data-goto="files">Dateien</button>
+                <button class="btn-secondary btn-sm" data-goto="analyzer">Analyse</button>
                 <button class="btn-secondary btn-sm" id="btn-rescan-media">Neu scannen</button>
               </div>
             </div>
@@ -239,24 +291,24 @@
               <div class="media-category-list" id="overview-media-categories"></div>
             </div>
           </article>
-        </div>
 
-        <section class="section-block">
-          <div class="section-header">
-            <div>
-              <h2>Festplatten &amp; Speicher-Pool</h2>
-              <p class="section-subtitle">Alle physischen Laufwerke, Mountpoints, Temperaturen &amp; I/O-Raten</p>
+          <!-- Widget 4: Disks -->
+          <section class="section-block overview-widget span-12" data-widget-id="disks">
+            <div class="section-header">
+              <div>
+                <h2>Festplatten &amp; Speicher-Pool</h2>
+                <p class="section-subtitle">Alle physischen Laufwerke, Mountpoints, Temperaturen &amp; I/O-Raten</p>
+              </div>
+              <div class="section-actions">
+                <span class="io-pill mono" id="total-disk-io">Lesen 0 MB/s · Schreiben 0 MB/s</span>
+                <button class="btn-secondary btn-sm" data-goto="storage">Alle Festplatten</button>
+              </div>
             </div>
-            <div class="section-actions">
-              <span class="io-pill mono" id="total-disk-io">Lesen 0 MB/s · Schreiben 0 MB/s</span>
-              <button class="btn-secondary btn-sm" data-goto="storage">Speicher &amp; SMB</button>
-            </div>
-          </div>
-          <div class="disks-grid" id="overview-disks-grid"></div>
-        </section>
+            <div class="disks-grid" id="overview-disks-grid"></div>
+          </section>
 
-        <div class="lower-grid">
-          <article class="card panel-card">
+          <!-- Widget 5: Services -->
+          <article class="card panel-card overview-widget span-5" data-widget-id="services">
             <div class="panel-header">
               <div>
                 <h2>Homeserver-Apps</h2>
@@ -270,7 +322,8 @@
             <div class="services-grid" id="overview-services-grid"></div>
           </article>
 
-          <article class="card panel-card">
+          <!-- Widget 6: Docker Summary -->
+          <article class="card panel-card overview-widget span-7" data-widget-id="docker">
             <div class="panel-header">
               <div>
                 <h2>Docker-Container</h2>
@@ -278,6 +331,7 @@
               </div>
               <div class="panel-controls-inline">
                 <input type="search" class="input-sm" id="overview-docker-search" placeholder="Container suchen…" />
+                <button class="btn-secondary btn-sm" data-goto="docker">Alle</button>
               </div>
             </div>
             <div class="table-wrap">
@@ -303,10 +357,10 @@
       <section class="view-section" id="view-files">
         <div class="section-header">
           <div>
-            <h2>Dateimanager &amp; Medien-Browser</h2>
-            <p class="section-subtitle">Fotos ansehen, Videos streamen, Configs bearbeiten, Dateien kopieren, verschieben &amp; als ZIP exportieren</p>
+            <h2>Dateimanager &amp; Papierkorb</h2>
+            <p class="section-subtitle">Dateien per Klick oder Drag &amp; Drop verschieben, Ordner direkt als ZIP laden, Text-Configs bearbeiten &amp; sicher löschen</p>
           </div>
-          <div class="section-actions">
+          <div class="section-actions" id="files-header-actions">
             <div class="segmented-sm">
               <button class="seg-btn active" id="btn-files-view-list">Liste</button>
               <button class="seg-btn" id="btn-files-view-grid">Kacheln</button>
@@ -321,6 +375,11 @@
           <aside class="card files-sidebar">
             <div class="files-sidebar-title">Laufwerke &amp; Ordner</div>
             <div id="files-roots-list" class="files-roots-list"></div>
+            <div class="divider"></div>
+            <button class="file-root-btn" id="btn-files-trash">
+              <span>🗑️ Papierkorb</span>
+              <span class="tag mono" id="trash-count-badge">0</span>
+            </button>
           </aside>
 
           <article class="card panel-card files-main" id="files-dropzone">
@@ -343,17 +402,28 @@
               </div>
             </div>
 
-            <!-- Bulk Actions Bar -->
+            <!-- Bulk Actions Bar (Normal Mode) -->
             <div class="bulk-bar hidden" id="files-bulk-bar">
               <span class="mono" id="files-bulk-count">0 ausgewählt</span>
               <div style="display:flex;gap:6px;flex-wrap:wrap;">
                 <button class="btn-secondary btn-sm" id="btn-bulk-copy">Kopieren nach…</button>
                 <button class="btn-secondary btn-sm" id="btn-bulk-move">Verschieben nach…</button>
                 <button class="btn-secondary btn-sm" id="btn-bulk-zip">Als ZIP laden</button>
-                <button class="btn-danger-ghost btn-sm" id="btn-bulk-delete">Löschen</button>
+                <button class="btn-danger-ghost btn-sm" id="btn-bulk-delete">In Papierkorb</button>
               </div>
             </div>
 
+            <!-- Trash Mode Actions Bar -->
+            <div class="bulk-bar hidden" id="files-trash-bar">
+              <span class="mono" id="trash-bar-label">Papierkorb — gelöschte Dateien lassen sich wiederherstellen</span>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="btn-secondary btn-sm hidden" id="btn-trash-restore-sel">Auswahl wiederherstellen</button>
+                <button class="btn-danger-ghost btn-sm hidden" id="btn-trash-delete-sel">Auswahl endgültig löschen</button>
+                <button class="btn-danger-ghost btn-sm" id="btn-trash-empty">Papierkorb leeren</button>
+              </div>
+            </div>
+
+            <!-- List Container -->
             <div class="table-wrap" id="files-list-container">
               <table class="data-table">
                 <thead>
@@ -370,56 +440,40 @@
               </table>
             </div>
 
+            <!-- Trash List Container -->
+            <div class="table-wrap hidden" id="files-trash-container">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th style="width:32px;"><input type="checkbox" id="trash-select-all" aria-label="Alle im Papierkorb auswählen" /></th>
+                    <th>Name</th>
+                    <th>Ursprungspfad</th>
+                    <th class="num">Größe</th>
+                    <th>Gelöscht am</th>
+                    <th class="num">Aktionen</th>
+                  </tr>
+                </thead>
+                <tbody id="files-trash-tbody"></tbody>
+              </table>
+            </div>
+
+            <!-- Grid Container -->
             <div class="files-grid-view hidden" id="files-grid-container"></div>
           </article>
         </div>
       </section>
 
-      <!-- ==================== VIEW: APP STORE & COMPOSE STACKS ==================== -->
-      <section class="view-section" id="view-appstore">
-        <div class="section-header">
-          <div>
-            <h2>Homeserver App Store &amp; Compose Stacks</h2>
-            <p class="section-subtitle">Einzel-Apps, Multi-Container-Stacks (Immich, Paperless, Nextcloud) oder eigene docker-compose.yml</p>
-          </div>
-          <div class="section-actions">
-            <input type="search" class="input-sm" id="appstore-search" placeholder="App suchen…" />
-            <button class="btn-secondary btn-sm" id="btn-open-compose-modal">Compose YAML einfügen</button>
-            <button class="btn-primary btn-sm" id="btn-custom-container">+ Eigener Container</button>
-          </div>
-        </div>
-
-        <div class="appstore-categories" id="appstore-categories">
-          <button class="cat-pill active" data-appcat="all">Alle Einzel-Apps</button>
-          <button class="cat-pill" data-appcat="Fotos & Videos">Fotos &amp; Videos</button>
-          <button class="cat-pill" data-appcat="Cloud & Backup">Cloud &amp; Backup</button>
-          <button class="cat-pill" data-appcat="Sicherheit & Netz">Sicherheit &amp; Netz</button>
-          <button class="cat-pill" data-appcat="System & Docker">System &amp; Docker</button>
-          <button class="cat-pill" data-appcat="stacks">Multi-Container Stacks</button>
-        </div>
-
-        <div class="appstore-grid" id="appstore-grid"></div>
-
-        <section class="section-block" id="deployed-stacks-section">
-          <div class="section-header">
-            <div>
-              <h2>Verwaltete Compose-Stacks</h2>
-              <p class="section-subtitle">Über das Dashboard gespeicherte Multi-Container-Stacks (Portainer-Stacks werden unter Docker markiert)</p>
-            </div>
-          </div>
-          <div class="disks-grid" id="deployed-stacks-grid"></div>
-        </section>
-      </section>
-
-      <!-- ==================== VIEW: STORAGE & SMB ==================== -->
+      <!-- ==================== VIEW: STORAGE ==================== -->
       <section class="view-section" id="view-storage">
         <div class="section-header">
           <div>
-            <h2>Festplatten, Blockgeräte &amp; SMB-Freigaben</h2>
-            <p class="section-subtitle">Kapazitäten, SMART-Werte, Ein-/Aushängen neuer Platten und Windows/macOS-Netzwerkfreigaben</p>
+            <h2>Festplatten &amp; Blockgeräte</h2>
+            <p class="section-subtitle">Kapazitäten, SMART-Gesundheit, Temperaturen, I/O-Durchsatz sowie Ein-/Aushängen neuer Laufwerke</p>
           </div>
           <div class="section-actions">
             <span class="io-pill mono" id="storage-total-badge">0 / 0 TB</span>
+            <button class="btn-secondary btn-sm" data-goto="smb">Freigaben (SMB)</button>
+            <button class="btn-primary btn-sm" data-goto="analyzer">Speicher-Analyse</button>
           </div>
         </div>
 
@@ -449,18 +503,27 @@
           </div>
           <div class="disks-grid" id="unmounted-disks-grid"></div>
         </section>
+      </section>
 
-        <!-- SMB Network Shares Manager -->
+      <!-- ==================== VIEW: SMB SHARES ==================== -->
+      <section class="view-section" id="view-smb">
+        <div class="section-header">
+          <div>
+            <h2>Netzwerkfreigaben (SMB / Samba)</h2>
+            <p class="section-subtitle">Teile Foto-, Video- und Archiv-Festplatten sicher mit Windows, macOS &amp; Linux im lokalen Netzwerk</p>
+          </div>
+          <div class="section-actions">
+            <span class="tag" id="smb-running-badge">Status wird geladen…</span>
+            <button class="btn-secondary btn-sm" id="btn-add-smb-share">+ Freigabe</button>
+            <button class="btn-primary btn-sm" id="btn-apply-smb">Samba-Dienst anwenden</button>
+          </div>
+        </div>
+
         <article class="card panel-card">
           <div class="panel-header">
             <div>
-              <h2>SMB / Samba Netzwerkfreigaben (Windows &amp; macOS)</h2>
-              <p class="panel-subtitle" id="smb-status-subtitle">Freigaben für deine Foto- und Video-Festplatten im lokalen Netzwerk</p>
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;">
-              <span class="tag" id="smb-running-badge">Status wird geladen…</span>
-              <button class="btn-secondary btn-sm" id="btn-add-smb-share">+ Freigabe</button>
-              <button class="btn-primary btn-sm" id="btn-apply-smb">Samba-Dienst anwenden</button>
+              <h2>Zugangsdaten &amp; Freigabe-Ordner</h2>
+              <p class="panel-subtitle" id="smb-status-subtitle">Änderungen schreiben die smb.conf und starten den Samba-Dienst neu</p>
             </div>
           </div>
 
@@ -492,11 +555,11 @@
         </article>
       </section>
 
-      <!-- ==================== VIEW: DOCKER ==================== -->
+      <!-- ==================== VIEW: DOCKER CONTAINERS ==================== -->
       <section class="view-section" id="view-docker">
         <div class="section-header">
           <div>
-            <h2>Docker-Container &amp; Portainer</h2>
+            <h2>Docker-Container</h2>
             <p class="section-subtitle" id="docker-full-subtitle">Live-Status über /var/run/docker.sock</p>
           </div>
           <div class="section-actions">
@@ -506,27 +569,10 @@
               <button class="seg-btn" data-docker-filter="stopped">Gestoppt</button>
             </div>
             <input type="search" class="input-sm" id="docker-full-search" placeholder="Name, Stack oder Image…" />
+            <button class="btn-secondary btn-sm" data-goto="portainer">Portainer &amp; Stacks</button>
             <button class="btn-primary btn-sm" id="btn-docker-new">+ Container</button>
           </div>
         </div>
-
-        <!-- Portainer Integration Panel -->
-        <article class="card panel-card" id="portainer-bridge-panel">
-          <div class="panel-header">
-            <div>
-              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <h2 style="margin:0;">Portainer-Stacks (Master)</h2>
-                <span class="tag" id="portainer-status-badge">Nicht verbunden</span>
-              </div>
-              <p class="panel-subtitle" id="portainer-bridge-subtitle">Portainer bleibt dauerhaft deine zentrale Ebene für Stacks, Volumes &amp; Netzwerke.</p>
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-              <button class="btn-secondary btn-sm" id="btn-goto-portainer-settings">Portainer konfigurieren</button>
-              <a class="btn-primary btn-sm hidden" id="btn-open-portainer" href="#" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">Portainer öffnen ↗</a>
-            </div>
-          </div>
-          <div class="portainer-stacks-grid" id="portainer-stacks-grid"></div>
-        </article>
 
         <article class="card panel-card">
           <div class="table-wrap">
@@ -548,14 +594,421 @@
         </article>
       </section>
 
+      <!-- ==================== VIEW: PORTAINER & STACKS ==================== -->
+      <section class="view-section" id="view-portainer">
+        <div class="section-header">
+          <div>
+            <h2>Portainer &amp; Compose-Stacks</h2>
+            <p class="section-subtitle">Zentrale Stack-Verwaltung über deine Portainer-API sowie eigene docker-compose.yml Stacks</p>
+          </div>
+          <div class="section-actions">
+            <button class="btn-secondary btn-sm" id="btn-goto-portainer-settings">Portainer konfigurieren</button>
+            <button class="btn-primary btn-sm" id="btn-portainer-new-stack">+ Compose Stack</button>
+            <a class="btn-primary btn-sm hidden" id="btn-open-portainer" href="#" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">Portainer öffnen ↗</a>
+          </div>
+        </div>
+
+        <article class="card panel-card" id="portainer-bridge-panel">
+          <div class="panel-header">
+            <div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <h2 style="margin:0;">Portainer-Stacks (Master)</h2>
+                <span class="tag" id="portainer-status-badge">Nicht verbunden</span>
+              </div>
+              <p class="panel-subtitle" id="portainer-bridge-subtitle">Portainer bleibt dauerhaft deine zentrale Ebene für Stacks, Volumes &amp; Netzwerke.</p>
+            </div>
+          </div>
+          <div class="portainer-stacks-grid" id="portainer-stacks-grid"></div>
+        </article>
+
+        <section class="section-block" id="deployed-stacks-section">
+          <div class="section-header">
+            <div>
+              <h2>Verwaltete Compose-Stacks</h2>
+              <p class="section-subtitle">Über das Dashboard gespeicherte Multi-Container-Stacks</p>
+            </div>
+          </div>
+          <div class="disks-grid" id="deployed-stacks-grid"></div>
+        </section>
+      </section>
+
+      <!-- ==================== VIEW: APP STORE ==================== -->
+      <section class="view-section" id="view-appstore">
+        <div class="section-header">
+          <div>
+            <h2>Homeserver App Store</h2>
+            <p class="section-subtitle">Offizielle Original-Images (kein BigBear), Multi-Container-Stacks oder eigene docker-compose.yml</p>
+          </div>
+          <div class="section-actions">
+            <input type="search" class="input-sm" id="appstore-search" placeholder="App suchen…" />
+            <button class="btn-secondary btn-sm" id="btn-open-compose-modal">Compose YAML einfügen</button>
+            <button class="btn-primary btn-sm" id="btn-custom-container">+ Eigener Container</button>
+          </div>
+        </div>
+
+        <div class="appstore-categories" id="appstore-categories">
+          <button class="cat-pill active" data-appcat="all">Alle Einzel-Apps</button>
+          <button class="cat-pill" data-appcat="Fotos & Videos">Fotos &amp; Videos</button>
+          <button class="cat-pill" data-appcat="Cloud & Backup">Cloud &amp; Backup</button>
+          <button class="cat-pill" data-appcat="Sicherheit & Netz">Sicherheit &amp; Netz</button>
+          <button class="cat-pill" data-appcat="System & Docker">System &amp; Docker</button>
+          <button class="cat-pill" data-appcat="stacks">Multi-Container Stacks</button>
+        </div>
+
+        <div class="appstore-grid" id="appstore-grid"></div>
+      </section>
+
+      <!-- ==================== VIEW: SMART STORAGE ANALYZER ==================== -->
+      <section class="view-section" id="view-analyzer">
+        <div class="section-header">
+          <div>
+            <h2>Speicher-Analyse &amp; Duplikate</h2>
+            <p class="section-subtitle">Findet die größten Speicherfresser (Ordner &amp; Dateien) sowie bitgenaue SHA-256 Duplikate über deine Laufwerke</p>
+          </div>
+          <div class="section-actions">
+            <button class="btn-primary btn-sm" id="btn-analyzer-scan">Analyse starten</button>
+          </div>
+        </div>
+
+        <article class="card panel-card">
+          <div class="panel-header">
+            <div>
+              <h2>Zu analysierende Speicher-Pfade</h2>
+              <p class="panel-subtitle" id="analyzer-status-subtitle">Bereit — wähle alle oder bestimmte Laufwerke</p>
+            </div>
+            <div id="analyzer-roots-list" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+          </div>
+
+          <div class="upload-progress hidden" id="analyzer-progress-wrap">
+            <div style="display:flex;justify-content:space-between;font-size:12px;">
+              <span id="analyzer-progress-label">Durchsuche Laufwerke…</span>
+              <span class="mono" id="analyzer-progress-stats">0 Dateien</span>
+            </div>
+            <div class="progress-track" style="margin-top:6px;">
+              <div class="progress-fill fill-blue progress-indeterminate" id="analyzer-progress-bar" style="width:45%"></div>
+            </div>
+          </div>
+        </article>
+
+        <div class="kpi-grid">
+          <article class="card kpi-card">
+            <div class="kpi-header"><span class="kpi-label">Geprüfte Dateien</span></div>
+            <div class="kpi-value mono" id="ana-kpi-files">0</div>
+            <p class="kpi-footnote" id="ana-kpi-dirs">0 Ordner gescannt</p>
+          </article>
+          <article class="card kpi-card">
+            <div class="kpi-header"><span class="kpi-label">Gesamtvolumen</span></div>
+            <div class="kpi-value mono" id="ana-kpi-bytes">0 B</div>
+            <p class="kpi-footnote">Analysierte Datenmenge</p>
+          </article>
+          <article class="card kpi-card">
+            <div class="kpi-header"><span class="kpi-label">Duplikat-Gruppen</span></div>
+            <div class="kpi-value mono" id="ana-kpi-dups">0</div>
+            <p class="kpi-footnote" id="ana-kpi-extra">0 überzählige Kopien</p>
+          </article>
+          <article class="card kpi-card">
+            <div class="kpi-header"><span class="kpi-label">Einsparpotenzial</span></div>
+            <div class="kpi-value mono" id="ana-kpi-wasted">0 B</div>
+            <p class="kpi-footnote">Durch Papierkorb-Bereinigung</p>
+          </article>
+        </div>
+
+        <div class="appstore-categories" id="analyzer-tabs">
+          <button class="cat-pill active" data-ana-tab="duplicates">Duplikate (SHA-256)</button>
+          <button class="cat-pill" data-ana-tab="dirs">Größte Ordner</button>
+          <button class="cat-pill" data-ana-tab="files">Größte Dateien</button>
+        </div>
+
+        <div id="analyzer-panel-duplicates">
+          <div id="analyzer-duplicates-list" class="settings-form">
+            <article class="card panel-card"><p class="muted-text">Starte oben eine Analyse, um identische Dateien über deine Laufwerke aufzuspüren.</p></article>
+          </div>
+        </div>
+
+        <article class="card panel-card hidden" id="analyzer-panel-dirs">
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Ordner</th>
+                  <th>Pfad</th>
+                  <th class="num">Dateien</th>
+                  <th class="num">Größe</th>
+                  <th class="num">Aktion</th>
+                </tr>
+              </thead>
+              <tbody id="analyzer-dirs-tbody"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card panel-card hidden" id="analyzer-panel-files">
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Datei</th>
+                  <th>Pfad</th>
+                  <th class="num">Größe</th>
+                  <th class="num">Aktionen</th>
+                </tr>
+              </thead>
+              <tbody id="analyzer-files-tbody"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <!-- ==================== VIEW: AUTOMATION & WOL ==================== -->
+      <section class="view-section" id="view-automation">
+        <div class="section-header">
+          <div>
+            <h2>Automation, Watchdog &amp; Wake-on-LAN</h2>
+            <p class="section-subtitle">Automatische Container-Wiederherstellung, tägliche Wartungspläne und Netzwerkgeräte per Magic Packet aufwecken</p>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <!-- Container Watchdog -->
+          <article class="card panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>Container-Watchdog (Auto-Heal)</h2>
+                <p class="panel-subtitle">Prüft alle 30 Sekunden den Health-Status laufender Container</p>
+              </div>
+              <span class="tag" id="wd-status-badge">Deaktiviert</span>
+            </div>
+            <form id="form-watchdog" class="settings-form">
+              <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;">
+                <input type="checkbox" id="wd-enabled" />
+                Container-Watchdog aktivieren
+              </label>
+
+              <div class="form-row-2">
+                <div class="form-group">
+                  <label for="wd-mode">Überwachungs-Modus</label>
+                  <select id="wd-mode" class="input-full">
+                    <option value="all">Alle Container</option>
+                    <option value="selected">Nur ausgewählte Container</option>
+                    <option value="label">Nur mit Label (com.homeserver.autoheal=true)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="wd-cooldown">Cooldown (Sekunden)</label>
+                  <input type="number" id="wd-cooldown" class="input-full mono" min="30" max="3600" value="180" />
+                </div>
+              </div>
+
+              <div class="form-group hidden" id="wd-containers-group">
+                <label>Ausgewählte Container</label>
+                <div id="wd-containers-list" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+              </div>
+
+              <div style="display:flex;gap:16px;flex-wrap:wrap;">
+                <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;">
+                  <input type="checkbox" id="wd-unhealthy" checked />
+                  Bei Status „Unhealthy“ neu starten
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;">
+                  <input type="checkbox" id="wd-exited" />
+                  Bei Fehler-Exit (&ne; 0) neu starten
+                </label>
+              </div>
+
+              <div class="form-actions">
+                <span class="save-feedback" id="wd-save-msg"></span>
+                <button type="submit" class="btn-primary">Watchdog speichern</button>
+              </div>
+            </form>
+          </article>
+
+          <!-- Wake-on-LAN -->
+          <article class="card panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>Wake-on-LAN (LAN-Geräte)</h2>
+                <p class="panel-subtitle">Sendet UDP-Magic-Packets zum Aufwecken weiterer PCs oder NAS-Systeme</p>
+              </div>
+            </div>
+            <form id="form-wol-add" class="form-row-2" style="gap:8px;">
+              <input type="text" id="wol-name" class="input-full" placeholder="Gerätename (z. B. Backup-NAS)" required />
+              <input type="text" id="wol-mac" class="input-full mono" placeholder="MAC z. B. AA:BB:CC:DD:EE:FF" required />
+              <input type="text" id="wol-broadcast" class="input-full mono" placeholder="Broadcast IP (255.255.255.255)" value="255.255.255.255" />
+              <div style="display:flex;gap:8px;">
+                <input type="number" id="wol-port" class="input-full mono" min="1" max="65535" value="9" style="max-width:90px;" />
+                <button type="submit" class="btn-primary" style="flex:1;">+ Gerät speichern</button>
+              </div>
+            </form>
+
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Gerät</th>
+                    <th>MAC-Adresse</th>
+                    <th>Broadcast</th>
+                    <th class="num">Aktionen</th>
+                  </tr>
+                </thead>
+                <tbody id="wol-devices-tbody"></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+
+        <!-- Daily Scheduler -->
+        <article class="card panel-card">
+          <div class="panel-header">
+            <div>
+              <h2>Tägliche Zeitpläne (Scheduler)</h2>
+              <p class="panel-subtitle">Automatische tägliche Wartungsaufgaben (Mediathek-Scan, Speicher-Analyse oder Container-Neustart)</p>
+            </div>
+          </div>
+
+          <form id="form-schedule-add" class="dynamic-row-4">
+            <input type="text" id="sched-name" class="input-full" placeholder="Aufgabenname (z. B. Nacht-Scan)" required />
+            <select id="sched-type" class="input-full">
+              <option value="media-scan">Mediathek neu scannen</option>
+              <option value="storage-analysis">Speicher- &amp; Duplikate-Analyse</option>
+              <option value="container-restart">Container neu starten</option>
+            </select>
+            <input type="text" id="sched-target" class="input-full mono" placeholder="Container-Name (optional)" />
+            <div style="display:flex;gap:6px;">
+              <input type="time" id="sched-time" class="input-full mono" value="03:00" required />
+              <button type="submit" class="btn-primary btn-sm">+ Hinzufügen</button>
+            </div>
+          </form>
+
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Aktiv</th>
+                  <th>Name</th>
+                  <th>Aufgabe</th>
+                  <th>Uhrzeit</th>
+                  <th>Letzter Lauf</th>
+                  <th class="num">Aktionen</th>
+                </tr>
+              </thead>
+              <tbody id="schedules-tbody"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <!-- Automation Event Log -->
+        <article class="card panel-card">
+          <div class="panel-header">
+            <div>
+              <h2>Automations-Protokoll</h2>
+              <p class="panel-subtitle">Letzte Watchdog-, Zeitplan- und Wake-on-LAN-Ereignisse</p>
+            </div>
+            <button class="btn-secondary btn-sm" id="btn-refresh-automation">Aktualisieren</button>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Zeitpunkt</th>
+                  <th>Quelle</th>
+                  <th>Status</th>
+                  <th>Meldung</th>
+                </tr>
+              </thead>
+              <tbody id="automation-events-tbody"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
       <!-- ==================== VIEW: SETTINGS ==================== -->
       <section class="view-section" id="view-settings">
         <div class="section-header">
           <div>
-            <h2>System- &amp; Dashboard-Einstellungen</h2>
-            <p class="section-subtitle">Servername, Medien-Pfade, App-Verknüpfungen und dauerhafte Portainer-Anbindung</p>
+            <h2>System- &amp; Design-Einstellungen</h2>
+            <p class="section-subtitle">Themes &amp; Akzentfarben, Servername, Speicherpfade, Portainer-Anbindung und App-Verknüpfungen</p>
           </div>
         </div>
+
+        <!-- Theme & Accent Picker Card -->
+        <article class="card panel-card">
+          <div class="panel-header">
+            <div>
+              <h2>Design, Themes &amp; Akzentfarbe</h2>
+              <p class="panel-subtitle">Wähle aus 5 abgestimmten Designs und deiner bevorzugten Akzentfarbe — wird dauerhaft im Server gespeichert</p>
+            </div>
+            <span class="save-feedback" id="theme-save-msg"></span>
+          </div>
+
+          <div class="theme-picker-grid" id="theme-picker-grid">
+            <button type="button" class="theme-option-card" data-pick-theme="studio-dark">
+              <div class="theme-preview-swatch swatch-studio-dark">
+                <span class="sw-rail"></span>
+                <span class="sw-card"></span>
+                <span class="sw-accent"></span>
+              </div>
+              <div class="theme-option-meta">
+                <strong>Studio Dark</strong>
+                <span>Apple-inspiriertes Dunkel</span>
+              </div>
+            </button>
+            <button type="button" class="theme-option-card" data-pick-theme="studio-light">
+              <div class="theme-preview-swatch swatch-studio-light">
+                <span class="sw-rail"></span>
+                <span class="sw-card"></span>
+                <span class="sw-accent"></span>
+              </div>
+              <div class="theme-option-meta">
+                <strong>Studio Light</strong>
+                <span>Helles macOS-Studio</span>
+              </div>
+            </button>
+            <button type="button" class="theme-option-card" data-pick-theme="oled">
+              <div class="theme-preview-swatch swatch-oled">
+                <span class="sw-rail"></span>
+                <span class="sw-card"></span>
+                <span class="sw-accent"></span>
+              </div>
+              <div class="theme-option-meta">
+                <strong>OLED Pure Black</strong>
+                <span>Maximaler Kontrast</span>
+              </div>
+            </button>
+            <button type="button" class="theme-option-card" data-pick-theme="slate">
+              <div class="theme-preview-swatch swatch-slate">
+                <span class="sw-rail"></span>
+                <span class="sw-card"></span>
+                <span class="sw-accent"></span>
+              </div>
+              <div class="theme-option-meta">
+                <strong>Nordic Slate</strong>
+                <span>Ruhiges Schiefergrau</span>
+              </div>
+            </button>
+            <button type="button" class="theme-option-card" data-pick-theme="indigo">
+              <div class="theme-preview-swatch swatch-indigo">
+                <span class="sw-rail"></span>
+                <span class="sw-card"></span>
+                <span class="sw-accent"></span>
+              </div>
+              <div class="theme-option-meta">
+                <strong>Midnight Indigo</strong>
+                <span>Tiefes Nachtblau</span>
+              </div>
+            </button>
+          </div>
+
+          <div class="accent-picker-row">
+            <span class="kpi-label">Akzentfarbe:</span>
+            <div class="accent-swatch-list" id="accent-picker-list">
+              <button type="button" class="accent-swatch-btn" data-pick-accent="blue" title="Studio Blau"><span class="swatch-dot" style="background:#0a84ff;"></span>Blau</button>
+              <button type="button" class="accent-swatch-btn" data-pick-accent="amber" title="Bernstein"><span class="swatch-dot" style="background:#d97e38;"></span>Amber</button>
+              <button type="button" class="accent-swatch-btn" data-pick-accent="emerald" title="Smaragd"><span class="swatch-dot" style="background:#30d158;"></span>Smaragd</button>
+              <button type="button" class="accent-swatch-btn" data-pick-accent="purple" title="Violett"><span class="swatch-dot" style="background:#bf5af2;"></span>Violett</button>
+              <button type="button" class="accent-swatch-btn" data-pick-accent="red" title="Koralle"><span class="swatch-dot" style="background:#ff453a;"></span>Koralle</button>
+            </div>
+          </div>
+        </article>
 
         <div class="settings-grid">
           <article class="card panel-card">
@@ -568,7 +1021,7 @@
               <div class="form-group">
                 <label for="input-media-paths">Medien- &amp; Datei-Ordner (kommagetrennt)</label>
                 <input type="text" id="input-media-paths" class="input-full mono" placeholder="/mnt/fotos, /mnt/filme, /mnt/serien" />
-                <small class="form-hint">Diese Pfade werden für Mediathek-Scan und Dateimanager freigegeben.</small>
+                <small class="form-hint">Diese Pfade werden für Mediathek-Scan, Dateimanager &amp; Speicher-Analyse freigegeben.</small>
               </div>
               <div class="form-actions">
                 <button type="submit" class="btn-primary">Einstellungen speichern</button>
@@ -584,7 +1037,7 @@
             <form id="form-portainer-settings" class="settings-form">
               <div class="form-group">
                 <label for="input-portainer-url">Portainer-URL</label>
-                <input type="url" id="input-portainer-url" class="input-full mono" placeholder="https://<server-ip>:9443" />
+                <input type="url" id="input-portainer-url" class="input-full mono" placeholder="https://&lt;server-ip&gt;:9443" />
               </div>
               <div class="form-group">
                 <label for="input-portainer-token">Portainer API-Token (Portainer → My account → Access tokens)</label>
@@ -626,7 +1079,7 @@
   <div class="modal-backdrop hidden" id="modal-search">
     <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-label="Schnellsuche">
       <div class="modal-header">
-        <input type="search" id="global-search-input" class="input-full" placeholder="Suche nach Apps, Containern, Festplatten oder Aktionen…" autofocus />
+        <input type="search" id="global-search-input" class="input-full" placeholder="Suche nach Apps, Containern, Festplatten oder Bereichen…" autofocus />
         <button class="modal-close" data-close-modal="modal-search" aria-label="Schließen">&times;</button>
       </div>
       <div class="search-results-list" id="global-search-results"></div>
@@ -883,23 +1336,31 @@
     </div>
   </div>
 
-  <!-- Modal: Copy / Move Destination Picker -->
+  <!-- Modal: Interactive Copy / Move Destination Picker -->
   <div class="modal-backdrop hidden" id="modal-copy-move">
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-cm-title">
+    <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-cm-title">
       <div class="modal-header">
-        <h3 id="modal-cm-title">Zielordner wählen</h3>
+        <div>
+          <h3 id="modal-cm-title">Zielordner wählen</h3>
+          <p class="panel-subtitle" id="cm-source-summary"></p>
+        </div>
         <button class="modal-close" data-close-modal="modal-copy-move" aria-label="Schließen">&times;</button>
       </div>
       <form id="form-copy-move" class="settings-form">
         <input type="hidden" id="cm-action" />
+        <div class="cm-browser-bar">
+          <div class="breadcrumbs mono" id="cm-breadcrumbs"></div>
+          <button type="button" class="btn-secondary btn-sm" id="cm-btn-mkdir">+ Ordner hier</button>
+        </div>
+        <div class="cm-dir-list" id="cm-dir-list"></div>
+        <div id="cm-quick-roots" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
         <div class="form-group">
-          <label for="cm-dest-input">Ziel-Verzeichnis</label>
+          <label for="cm-dest-input">Ausgewählter Zielpfad</label>
           <input type="text" id="cm-dest-input" class="input-full mono" required />
         </div>
-        <div id="cm-quick-roots" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
         <div class="form-actions">
           <button type="button" class="btn-secondary" data-close-modal="modal-copy-move">Abbrechen</button>
-          <button type="submit" class="btn-primary" id="cm-submit-btn">Ausführen</button>
+          <button type="submit" class="btn-primary" id="cm-submit-btn">Hierher verschieben</button>
         </div>
       </form>
     </div>
@@ -956,6 +1417,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=2"></script>
+  <script src="/app.js?v=3"></script>
 </body>
 </html>
