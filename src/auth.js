@@ -105,12 +105,21 @@ function isAuthEnabled() {
 
 function getAuthMeta() {
   const fileCfg = readAuthFile();
+  const totpEnabled = Boolean(fileCfg?.totp?.enabled && fileCfg?.totp?.secret);
+  const totpActivatedAt = totpEnabled ? fileCfg.totp.activatedAt || null : null;
+  const backupCodesRemaining = totpEnabled && Array.isArray(fileCfg.totp.backupHashes)
+    ? fileCfg.totp.backupHashes.length
+    : 0;
+
   if (fileCfg?.passwordHash?.salt && fileCfg?.passwordHash?.hash) {
     return {
       authEnabled: true,
       mode: 'ui',
       envOverrideActive: Boolean(getEnvPassword()),
-      updatedAt: fileCfg.updatedAt || null
+      updatedAt: fileCfg.updatedAt || null,
+      totpEnabled,
+      totpActivatedAt,
+      backupCodesRemaining
     };
   }
   if (getEnvPassword()) {
@@ -118,15 +127,180 @@ function getAuthMeta() {
       authEnabled: true,
       mode: 'env',
       envOverrideActive: true,
-      updatedAt: null
+      updatedAt: null,
+      totpEnabled,
+      totpActivatedAt,
+      backupCodesRemaining
     };
   }
   return {
     authEnabled: false,
     mode: 'none',
     envOverrideActive: false,
-    updatedAt: fileCfg?.updatedAt || null
+    updatedAt: fileCfg?.updatedAt || null,
+    totpEnabled: false,
+    totpActivatedAt: null,
+    backupCodesRemaining: 0
   };
+}
+
+// ==================== TOTP (RFC 6238) 2FA ====================
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function encodeBase32(buf) {
+  let bits = 0;
+  let value = 0;
+  let output = '';
+  for (let i = 0; i < buf.length; i += 1) {
+    value = (value << 8) | buf[i];
+    bits += 8;
+    while (bits >= 5) {
+      output += BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) {
+    output += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+  }
+  return output;
+}
+
+function decodeBase32(str) {
+  const clean = String(str || '').toUpperCase().replace(/[^A-Z2-7]/g, '');
+  let bits = 0;
+  let value = 0;
+  const out = [];
+  for (let i = 0; i < clean.length; i += 1) {
+    const idx = BASE32_ALPHABET.indexOf(clean[i]);
+    if (idx === -1) continue;
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(out);
+}
+
+function generateTotpCode(secretBase32, counter = Math.floor(Date.now() / 1000 / 30)) {
+  const key = decodeBase32(secretBase32);
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64BE(BigInt(counter), 0);
+  const hmac = crypto.createHmac('sha1', key).update(buf).digest();
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const binary =
+    ((hmac[offset] & 0x7f) << 24) |
+    ((hmac[offset + 1] & 0xff) << 16) |
+    ((hmac[offset + 2] & 0xff) << 8) |
+    (hmac[offset + 3] & 0xff);
+  return String(binary % 1_000_000).padStart(6, '0');
+}
+
+function verifyTotpCode(secretBase32, candidate, windowSteps = 1) {
+  const code = String(candidate || '').replace(/\s+/g, '');
+  if (!/^\d{6}$/.test(code)) return false;
+  const step = Math.floor(Date.now() / 1000 / 30);
+  const candBuf = Buffer.from(code, 'utf8');
+  for (let delta = -windowSteps; delta <= windowSteps; delta += 1) {
+    const expected = generateTotpCode(secretBase32, step + delta);
+    const expBuf = Buffer.from(expected, 'utf8');
+    if (candBuf.length === expBuf.length && crypto.timingSafeEqual(candBuf, expBuf)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function setupTotp(issuer = 'Homeserver OS', account = 'admin') {
+  if (!isAuthEnabled()) {
+    const err = new Error('Bitte zuerst ein Dashboard-Passwort festlegen, bevor 2FA aktiviert wird.');
+    err.statusCode = 400;
+    throw err;
+  }
+  const secret = encodeBase32(crypto.randomBytes(20));
+  const fileCfg = readAuthFile() || {};
+  writeAuthFile({
+    ...fileCfg,
+    pendingTotpSecret: secret,
+    pendingTotpCreatedAt: new Date().toISOString()
+  });
+  const label = encodeURIComponent(`${issuer}:${account}`);
+  const otpauthUrl = `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
+  return { secret, otpauthUrl };
+}
+
+function enableTotp(code) {
+  const fileCfg = readAuthFile();
+  const pendingSecret = fileCfg?.pendingTotpSecret;
+  if (!pendingSecret) {
+    const err = new Error('Kein 2FA-Setup aktiv. Bitte zuerst QR-Code generieren.');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!verifyTotpCode(pendingSecret, code)) {
+    const err = new Error('Der eingegebene 6-stellige Code ist ungültig.');
+    err.statusCode = 400;
+    throw err;
+  }
+  const backupCodes = [];
+  const backupHashes = [];
+  for (let i = 0; i < 8; i += 1) {
+    const raw = crypto.randomBytes(4).toString('hex').toUpperCase();
+    const formatted = `${raw.slice(0, 4)}-${raw.slice(4, 8)}`;
+    backupCodes.push(formatted);
+    backupHashes.push(hashPasswordScrypt(formatted));
+  }
+  const nextCfg = { ...fileCfg };
+  delete nextCfg.pendingTotpSecret;
+  delete nextCfg.pendingTotpCreatedAt;
+  nextCfg.totp = {
+    enabled: true,
+    secret: pendingSecret,
+    activatedAt: new Date().toISOString(),
+    backupHashes
+  };
+  writeAuthFile(nextCfg);
+  return { ok: true, backupCodes, ...getAuthMeta() };
+}
+
+function disableTotp(currentPassword) {
+  if (isAuthEnabled() && !verifyPassword(currentPassword)) {
+    const err = new Error('Aktuelles Passwort ist falsch.');
+    err.statusCode = 401;
+    throw err;
+  }
+  const fileCfg = readAuthFile() || {};
+  const nextCfg = { ...fileCfg };
+  delete nextCfg.totp;
+  delete nextCfg.pendingTotpSecret;
+  delete nextCfg.pendingTotpCreatedAt;
+  writeAuthFile(nextCfg);
+  return { ok: true, ...getAuthMeta() };
+}
+
+function verifyTotpForLogin(candidate) {
+  const fileCfg = readAuthFile();
+  if (!fileCfg?.totp?.enabled || !fileCfg?.totp?.secret) return true;
+  const raw = String(candidate || '').trim().toUpperCase();
+  if (!raw) return false;
+  if (verifyTotpCode(fileCfg.totp.secret, raw)) return true;
+
+  const hashes = Array.isArray(fileCfg.totp.backupHashes) ? fileCfg.totp.backupHashes : [];
+  for (let i = 0; i < hashes.length; i += 1) {
+    if (verifyScryptHash(raw, hashes[i])) {
+      hashes.splice(i, 1);
+      fileCfg.totp.backupHashes = hashes;
+      writeAuthFile(fileCfg);
+      return true;
+    }
+  }
+  return false;
+}
+
+function isTotpEnabled() {
+  const fileCfg = readAuthFile();
+  return isAuthEnabled() && Boolean(fileCfg?.totp?.enabled && fileCfg?.totp?.secret);
 }
 
 function hashPasswordScrypt(plainPassword) {
@@ -154,6 +328,7 @@ function setDashboardPassword(currentPassword, newPassword) {
     throw err;
   }
 
+  const fileCfg = readAuthFile() || {};
   const next = String(newPassword ?? '');
   if (!next.trim()) {
     if (getEnvPassword()) {
@@ -171,10 +346,13 @@ function setDashboardPassword(currentPassword, newPassword) {
     throw err;
   }
 
-  writeAuthFile({
+  const nextCfg = {
+    ...fileCfg,
     passwordHash: hashPasswordScrypt(next),
     updatedAt: new Date().toISOString()
-  });
+  };
+  delete nextCfg.disabled;
+  writeAuthFile(nextCfg);
 
   return { ok: true, ...getAuthMeta(), message: 'Dashboard-Passwort erfolgreich gespeichert.' };
 }
@@ -253,8 +431,13 @@ function clearSessionCookie() {
 
 module.exports = {
   isAuthEnabled,
+  isTotpEnabled,
   isAuthenticated,
   verifyPassword,
+  verifyTotpForLogin,
+  setupTotp,
+  enableTotp,
+  disableTotp,
   getAuthMeta,
   setDashboardPassword,
   createSessionCookie,

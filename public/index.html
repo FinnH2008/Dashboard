@@ -12,7 +12,7 @@
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="apple-touch-icon" href="/icon.svg" />
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-  <link rel="stylesheet" href="/styles.css?v=3" />
+  <link rel="stylesheet" href="/styles.css?v=4" />
 </head>
 <body>
   <!-- Optional Auth Gate Overlay -->
@@ -31,6 +31,10 @@
         <div class="form-group">
           <label for="login-password">Dashboard-Passwort</label>
           <input type="password" id="login-password" class="input-full" autocomplete="current-password" required />
+        </div>
+        <div class="form-group hidden" id="login-totp-group">
+          <label for="login-totp">2FA-Code (Authenticator-App oder Backup-Code)</label>
+          <input type="text" id="login-totp" class="input-full mono" autocomplete="one-time-code" placeholder="6-stelliger Code oder Backup-Code" />
         </div>
         <p class="form-error hidden" id="login-error">Falsches Passwort.</p>
         <button type="submit" class="btn-primary" style="width:100%;">Anmelden</button>
@@ -206,6 +210,7 @@
                   <div class="progress-fill fill-blue" id="kpi-cpu-bar" style="width: 0%"></div>
                 </div>
                 <p class="kpi-footnote" id="kpi-cpu-model">—</p>
+                <p class="kpi-footnote mono" id="kpi-power-info">Strom: —</p>
               </article>
 
               <article class="card kpi-card">
@@ -271,6 +276,8 @@
                   <button class="seg-btn active" data-chart-range="60">1 Min</button>
                   <button class="seg-btn" data-chart-range="300">5 Min</button>
                   <button class="seg-btn" data-chart-range="900">15 Min</button>
+                  <button class="seg-btn" data-chart-range="86400">24 Std</button>
+                  <button class="seg-btn" data-chart-range="604800">7 Tage</button>
                 </div>
                 <div class="segmented-sm" role="group" aria-label="Metrik">
                   <button class="seg-btn active" data-chart="compute" id="chart-mode-compute">CPU &amp; RAM</button>
@@ -475,6 +482,7 @@
                     <th>Ursprungspfad</th>
                     <th class="num">Größe</th>
                     <th>Gelöscht am</th>
+                    <th>Auto-Löschung</th>
                     <th class="num">Aktionen</th>
                   </tr>
                 </thead>
@@ -712,6 +720,66 @@
             </table>
           </div>
         </article>
+        <!-- SSH & Fail2ban + SSL Checker -->
+        <div class="settings-grid">
+          <article class="card panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>SSH &amp; Fail2ban-Monitor</h2>
+                <p class="panel-subtitle" id="host-security-subtitle">Aktive SSH-Sessions, fehlgeschlagene Logins &amp; gesperrte IPs</p>
+              </div>
+              <span class="tag mono" id="host-security-source">—</span>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+              <span class="io-pill mono" id="host-ssh-sessions-count">0 aktive SSH-Sessions</span>
+              <span class="io-pill mono" id="host-fail2ban-banned-count">0 blockierte IPs</span>
+            </div>
+            <div class="table-wrap" style="max-height:200px;overflow:auto;">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>IP / Jail</th>
+                    <th>Typ</th>
+                    <th>Details / Zeitpunkt</th>
+                  </tr>
+                </thead>
+                <tbody id="host-security-tbody"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="card panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>SSL-Zertifikate &amp; Reverse-Proxy</h2>
+                <p class="panel-subtitle">Prüft Zertifikatslaufzeit &amp; warnt per Push &lt; 14 Tage</p>
+              </div>
+              <button type="button" class="btn-secondary btn-sm" id="btn-ssl-check-now">Jetzt prüfen</button>
+            </div>
+            <form id="form-ssl-add" class="form-row-3" style="gap:8px;">
+              <input type="text" id="ssl-name" class="input-full" placeholder="Name (z. B. Immich)" required />
+              <input type="text" id="ssl-host" class="input-full mono" placeholder="Domain / Host (z. B. fotos.example.de)" required />
+              <div style="display:flex;gap:6px;">
+                <input type="number" id="ssl-port" class="input-full mono" min="1" max="65535" value="443" style="max-width:85px;" />
+                <button type="submit" class="btn-primary btn-sm">+ Domain</button>
+              </div>
+            </form>
+            <div class="table-wrap" style="max-height:220px;overflow:auto;">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Dienst</th>
+                    <th>Status</th>
+                    <th class="num">Restlaufzeit</th>
+                    <th>Geprüft</th>
+                    <th class="num"></th>
+                  </tr>
+                </thead>
+                <tbody id="host-ssl-tbody"></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
       </section>
 
       <!-- ==================== VIEW: DOCKER CONTAINERS ==================== -->
@@ -750,10 +818,34 @@
                   <th class="num">CPU</th>
                   <th class="num">RAM</th>
                   <th>Ports</th>
+                  <th>Auto-Update</th>
                   <th class="num">Aktionen</th>
                 </tr>
               </thead>
               <tbody id="docker-full-tbody"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card panel-card" id="docker-oom-card">
+          <div class="panel-header">
+            <div>
+              <h2>Ressourcenlimits &amp; OOM-Verlauf</h2>
+              <p class="panel-subtitle" id="docker-oom-summary">Container ohne Memory-Limit sowie erkannte Out-of-Memory (OOMKilled) Neustarts</p>
+            </div>
+          </div>
+          <div class="table-wrap" style="max-height:240px;overflow:auto;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Zeitpunkt</th>
+                  <th>Container</th>
+                  <th>Image</th>
+                  <th>Limit / Restarts</th>
+                  <th>Ereignis</th>
+                </tr>
+              </thead>
+              <tbody id="docker-oom-tbody"></tbody>
             </table>
           </div>
         </article>
@@ -1149,6 +1241,38 @@
           </div>
         </article>
 
+        <!-- Docker Auto-Update Schedule (Watchtower-Ersatz) -->
+        <article class="card panel-card">
+          <div class="panel-header">
+            <div>
+              <h2>Container Auto-Update Zeitplan (Watchtower-Ersatz)</h2>
+              <p class="panel-subtitle">Prüft täglich zur gewählten Uhrzeit auf neue Docker-Images und aktualisiert Container je nach Richtlinie</p>
+            </div>
+            <span class="tag" id="autoupdate-status-badge">Deaktiviert</span>
+          </div>
+          <form id="form-autoupdate" class="settings-form">
+            <div class="form-row-3">
+              <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;">
+                <input type="checkbox" id="autoupdate-enabled" />
+                Tägliches Auto-Update aktivieren
+              </label>
+              <div class="form-group">
+                <label for="autoupdate-time">Uhrzeit (täglich)</label>
+                <input type="time" id="autoupdate-time" class="input-full mono" value="03:00" required />
+              </div>
+              <div class="form-group">
+                <label>Letzter Lauf</label>
+                <div class="io-pill mono" id="autoupdate-last-run">Noch kein Lauf</div>
+              </div>
+            </div>
+            <div class="form-actions" style="flex-wrap:wrap;">
+              <span class="save-feedback" id="autoupdate-save-msg"></span>
+              <button type="button" class="btn-secondary" id="btn-autoupdate-run-now">Jetzt prüfen &amp; updaten</button>
+              <button type="submit" class="btn-primary">Auto-Update speichern</button>
+            </div>
+          </form>
+        </article>
+
         <!-- Automation Event Log -->
         <article class="card panel-card">
           <div class="panel-header">
@@ -1276,6 +1400,20 @@
                 <input type="text" id="input-media-paths" class="input-full mono" placeholder="/mnt/fotos, /mnt/filme, /mnt/serien" />
                 <small class="form-hint">Diese Pfade werden für Mediathek-Scan, Dateimanager &amp; Speicher-Analyse freigegeben.</small>
               </div>
+              <div class="form-row-3">
+                <div class="form-group">
+                  <label for="input-power-idle">Idle-Leistung (W)</label>
+                  <input type="number" id="input-power-idle" class="input-full mono" min="1" max="500" step="1" value="18" />
+                </div>
+                <div class="form-group">
+                  <label for="input-power-max">Max-Last (W)</label>
+                  <input type="number" id="input-power-max" class="input-full mono" min="5" max="2000" step="1" value="65" />
+                </div>
+                <div class="form-group">
+                  <label for="input-power-kwh">Strompreis (€/kWh)</label>
+                  <input type="number" id="input-power-kwh" class="input-full mono" min="0.01" max="5" step="0.01" value="0.32" />
+                </div>
+              </div>
               <div class="form-actions">
                 <button type="submit" class="btn-primary">Einstellungen speichern</button>
                 <span class="save-feedback" id="settings-save-msg"></span>
@@ -1354,6 +1492,45 @@
                 <span class="save-feedback" id="pw-save-msg"></span>
                 <button type="submit" class="btn-primary">Passwort speichern</button>
               </div>
+            </form>
+
+            <div class="divider"></div>
+            <div class="panel-header" style="margin-bottom:8px;">
+              <div>
+                <h3 style="margin:0;font-size:14px;">Zwei-Faktor-Authentifizierung (2FA / TOTP)</h3>
+                <p class="muted-text" style="margin:2px 0 0;">6-stelliger Einmalcode per Authenticator-App (Google/Bitwarden/Aegis)</p>
+              </div>
+              <span class="tag" id="totp-status-badge">Deaktiviert</span>
+            </div>
+
+            <div id="totp-setup-start-wrap">
+              <button type="button" class="btn-secondary btn-sm" id="btn-totp-setup">2FA einrichten</button>
+            </div>
+
+            <div class="hidden" id="totp-setup-panel" style="display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:var(--radius-sm);background:var(--bg-elevated);border:1px solid var(--border);margin-top:8px;">
+              <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;">
+                <div id="totp-qr-box" style="background:#fff;padding:8px;border-radius:8px;line-height:0;"></div>
+                <div style="flex:1;min-width:190px;display:flex;flex-direction:column;gap:6px;">
+                  <div style="font-size:12px;color:var(--text-secondary);">QR-Code mit Authenticator-App scannen oder Schlüssel manuell eingeben:</div>
+                  <code class="mono" id="totp-secret-text" style="word-break:break-all;font-size:12px;">—</code>
+                </div>
+              </div>
+              <form id="form-totp-enable" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <input type="text" id="totp-verify-code" class="input-sm mono" placeholder="6-stelliger Code" maxlength="6" required />
+                <button type="submit" class="btn-primary btn-sm">Code bestätigen &amp; aktivieren</button>
+              </form>
+              <p class="form-error hidden" id="totp-enable-error"></p>
+            </div>
+
+            <div class="hidden" id="totp-backup-codes-box" style="padding:10px;border-radius:var(--radius-sm);background:var(--accent-amber-soft);border:1px solid rgba(217,126,56,0.35);margin-top:8px;">
+              <div style="font-size:12px;font-weight:600;color:var(--accent-amber);margin-bottom:4px;">Backup-Codes sicher aufbewahren (jeweils einmalig gültig):</div>
+              <div class="mono" id="totp-backup-codes-list" style="font-size:12px;display:flex;gap:8px;flex-wrap:wrap;"></div>
+            </div>
+
+            <form id="form-totp-disable" class="hidden" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+              <input type="password" id="totp-disable-pw" class="input-sm" placeholder="Dashboard-Passwort zur Bestätigung" required />
+              <button type="submit" class="btn-danger-ghost btn-sm">2FA deaktivieren</button>
+              <span class="save-feedback" id="totp-disable-msg"></span>
             </form>
 
             <div class="divider"></div>
@@ -1721,6 +1898,7 @@
           <button type="button" class="btn-secondary btn-sm" id="btn-preview-jump">Springen</button>
         </div>
       </div>
+      <div class="preview-exif-bar hidden mono" id="preview-exif-bar" style="font-size:11.5px;color:var(--text-secondary);padding:6px 10px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius-sm);display:flex;gap:12px;flex-wrap:wrap;"></div>
       <div class="media-preview-stage" id="media-preview-stage"></div>
     </div>
   </div>
@@ -1861,6 +2039,26 @@
     </div>
   </div>
 
-  <script src="/app.js?v=3"></script>
+  <!-- Modal: Trash Restore Conflict -->
+  <div class="modal-backdrop hidden" id="modal-trash-conflict">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-trash-conflict-title">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-trash-conflict-title">Ziel-Datei existiert bereits</h3>
+          <p class="panel-subtitle">Wähle, wie bei der Wiederherstellung verfahren werden soll</p>
+        </div>
+        <button class="modal-close" data-close-modal="modal-trash-conflict" aria-label="Schließen">&times;</button>
+      </div>
+      <div id="trash-conflict-list" class="mono muted-text" style="font-size:12px;padding:10px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:160px;overflow:auto;"></div>
+      <div class="form-actions" style="flex-wrap:wrap;margin-top:10px;">
+        <button type="button" class="btn-secondary" data-close-modal="modal-trash-conflict">Abbrechen</button>
+        <button type="button" class="btn-secondary" id="btn-trash-conflict-rename">Umbenennen (Kopie)</button>
+        <button type="button" class="btn-danger-ghost" id="btn-trash-conflict-overwrite">Überschreiben</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/qr.js?v=4"></script>
+  <script src="/app.js?v=4"></script>
 </body>
 </html>

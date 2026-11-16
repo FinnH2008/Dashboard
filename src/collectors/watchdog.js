@@ -266,6 +266,42 @@ async function runTick(callbacks = {}) {
         // retry next tick
       }
     }
+
+    // 4. Daily Docker Auto-Update Schedule
+    try {
+      const autoCfg = loadAutoUpdateConfig();
+      if (autoCfg.enabled && autoCfg.timeHHMM === curHHMM && autoCfg.lastRunDate !== todayStr) {
+        const res = await runAutoUpdatePass(notifyWatchdogEvent);
+        recordAutomationEvent(
+          'docker-autoupdate',
+          'ok',
+          `Auto-Update-Lauf (${res.updatesAvailable} Updates gefunden, ${res.results.length} Aktionen ausgeführt).`
+        );
+      }
+    } catch (err) {
+      recordAutomationEvent('docker-autoupdate', 'error', `Auto-Update fehlgeschlagen: ${err.message}`);
+    }
+
+    // 5. SSL Certificate Check every 6 hours
+    const sslTargets = loadSslTargets();
+    if (sslTargets.length > 0) {
+      const lastSslCheck = sslTargets.reduce((m, t) => Math.max(m, t.checkedAt ? new Date(t.checkedAt).getTime() : 0), 0);
+      if (Date.now() - lastSslCheck >= 6 * 3600 * 1000) {
+        try {
+          const checked = await checkAllSslTargets();
+          for (const cert of checked) {
+            if (cert.valid === false || (typeof cert.daysRemaining === 'number' && cert.daysRemaining <= 14)) {
+              const msg = cert.valid === false
+                ? `SSL-Zertifikat für ${cert.host} ist ungültig (${cert.error || 'abgelaufen'}).`
+                : `SSL-Zertifikat für ${cert.host} läuft in ${cert.daysRemaining} Tagen ab.`;
+              notifyWatchdogEvent(`ssl:${cert.host}`, `SSL-Warnung: ${cert.name}`, msg, cert.valid === false ? 'crit' : 'warn').catch(() => {});
+            }
+          }
+        } catch {
+          // ignore transient ssl check error
+        }
+      }
+    }
   } finally {
     checkInFlight = false;
   }

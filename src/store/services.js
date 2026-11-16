@@ -48,6 +48,14 @@ function normalizeUiConfig(rawUi) {
   return { theme, accent, overviewWidgets: widgets };
 }
 
+function normalizePowerConfig(rawPower) {
+  const p = rawPower && typeof rawPower === 'object' ? rawPower : {};
+  const idleWatts = Math.max(1, Math.min(500, Number(p.idleWatts) || 18));
+  const maxWatts = Math.max(idleWatts, Math.min(1500, Number(p.maxWatts) || 65));
+  const kwhPriceEur = Math.max(0.01, Math.min(5, Number(p.kwhPriceEur) || 0.32));
+  return { idleWatts, maxWatts, kwhPriceEur };
+}
+
 function readDefaultConfig() {
   try {
     const raw = fs.readFileSync(DEFAULT_FILE, 'utf8');
@@ -60,6 +68,7 @@ function readDefaultConfig() {
       portainerUrl: process.env.PORTAINER_URL || '',
       portainerApiKey: process.env.PORTAINER_API_KEY || '',
       portainerEndpointId: process.env.PORTAINER_ENDPOINT_ID ? Number(process.env.PORTAINER_ENDPOINT_ID) : null,
+      power: normalizePowerConfig(parsed.power),
       ui: normalizeUiConfig(parsed.ui)
     };
   } catch {
@@ -71,6 +80,7 @@ function readDefaultConfig() {
       portainerUrl: process.env.PORTAINER_URL || '',
       portainerApiKey: process.env.PORTAINER_API_KEY || '',
       portainerEndpointId: process.env.PORTAINER_ENDPOINT_ID ? Number(process.env.PORTAINER_ENDPOINT_ID) : null,
+      power: normalizePowerConfig(null),
       ui: normalizeUiConfig(null)
     };
   }
@@ -99,6 +109,7 @@ function loadConfig() {
       portainerEndpointId: Number.isFinite(Number(parsed.portainerEndpointId)) && Number(parsed.portainerEndpointId) > 0
         ? Number(parsed.portainerEndpointId)
         : defaults.portainerEndpointId,
+      power: normalizePowerConfig(parsed.power),
       ui: normalizeUiConfig(parsed.ui)
     };
   } catch {
@@ -116,6 +127,7 @@ function getPublicConfig() {
     portainerUrl: cfg.portainerUrl || '',
     portainerEndpointId: cfg.portainerEndpointId || null,
     hasPortainerApiKey: Boolean(cfg.portainerApiKey),
+    power: cfg.power,
     ui: cfg.ui
   };
 }
@@ -134,6 +146,10 @@ function saveConfig(nextConfig) {
     ? normalizeUiConfig({ ...current.ui, ...nextConfig.ui })
     : current.ui;
 
+  const mergedPower = nextConfig.power && typeof nextConfig.power === 'object'
+    ? normalizePowerConfig({ ...current.power, ...nextConfig.power })
+    : current.power;
+
   const merged = {
     serverName: typeof nextConfig.serverName === 'string' && nextConfig.serverName.trim()
       ? nextConfig.serverName.trim()
@@ -150,6 +166,7 @@ function saveConfig(nextConfig) {
     portainerEndpointId: nextConfig.portainerEndpointId !== undefined
       ? (Number(nextConfig.portainerEndpointId) > 0 ? Number(nextConfig.portainerEndpointId) : null)
       : current.portainerEndpointId,
+    power: mergedPower,
     ui: mergedUi
   };
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), 'utf8');

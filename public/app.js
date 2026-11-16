@@ -226,6 +226,8 @@
       const res = await fetch('/api/auth/status');
       const status = await res.json();
       document.getElementById('btn-logout').classList.toggle('hidden', !status.authEnabled);
+      const totpGroup = document.getElementById('login-totp-group');
+      if (totpGroup) totpGroup.classList.toggle('hidden', !status.totpEnabled);
       if (status.authEnabled && !status.authenticated) {
         document.getElementById('auth-overlay').classList.remove('hidden');
         return false;
@@ -468,12 +470,19 @@
   }
 
   // ==================== STREAMING & SNAPSHOTS ====================
-  async function loadTelemetryHistory() {
+  async function loadTelemetryHistory(rangeSec = 0) {
     try {
-      const res = await fetch('/api/telemetry/history?limit=900', { cache: 'no-store' });
+      const rSec = Number(rangeSec) || 0;
+      const query = rSec > 900 ? `/api/telemetry/history?rangeSec=${rSec}&limit=2500` : '/api/telemetry/history?limit=900';
+      const res = await fetch(query, { cache: 'no-store' });
       if (!res.ok) return;
       const data = await res.json();
       const loaded = Array.isArray(data.points) ? data.points : [];
+      if (rSec > 900) {
+        state.longHistory = loaded;
+        drawTelemetryChart();
+        return;
+      }
       if (loaded.length > 0) {
         const merged = [...loaded, ...state.history];
         merged.sort((a, b) => a.ts - b.ts);
@@ -905,6 +914,12 @@
     cpuBar.style.width = `${Math.min(100, cpuPct)}%`;
     cpuBar.className = `progress-fill ${cpuPct >= 85 ? 'fill-red' : cpuPct >= 65 ? 'fill-amber' : 'fill-blue'}`;
     document.getElementById('kpi-cpu-model').textContent = `${system.cpu.model} (${system.cpu.coresCount} Threads)`;
+    const powerEl = document.getElementById('kpi-power-info');
+    if (powerEl && system.power) {
+      const p = system.power;
+      const srcLabel = p.source === 'rapl' ? 'RAPL' : 'geschätzt';
+      powerEl.textContent = `Strom: ~${p.watts.toFixed(1)} W · ~${p.monthlyCostEur.toFixed(2)} €/Monat (${srcLabel})`;
+    }
 
     const mem = system.memory;
     document.getElementById('kpi-ram-pct').textContent = `${mem.usedPercent.toFixed(1)}%`;
@@ -1065,15 +1080,16 @@
       ctx.fillText(`${val}`, pad.left - 7, y);
     }
 
+    const fmtAxisTs = (ts) => (rangeSec > 900 ? formatDateTimeShort(ts) : formatTimeShort(ts));
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.fillText(formatTimeShort(startTs), pad.left, h - 16);
+    ctx.fillText(fmtAxisTs(startTs), pad.left, h - 16);
     if (plotW >= 240) {
       ctx.textAlign = 'center';
-      ctx.fillText(formatTimeShort(startTs + rangeMs / 2), pad.left + plotW / 2, h - 16);
+      ctx.fillText(fmtAxisTs(startTs + rangeMs / 2), pad.left + plotW / 2, h - 16);
     }
     ctx.textAlign = 'right';
-    ctx.fillText(`${formatTimeShort(endTs)} (${unit})`, w - pad.right, h - 16);
+    ctx.fillText(`${fmtAxisTs(endTs)} (${unit})`, w - pad.right, h - 16);
 
     function pointX(ts) {
       const ratio = rangeMs > 0 ? (ts - startTs) / rangeMs : 1;
@@ -1293,6 +1309,7 @@
               <div class="disk-badges">
                 <span class="tag">${escapeHtml(disk.diskType)}</span>
                 <span class="tag ${healthTagClass}">${escapeHtml(disk.smartStatus)}</span>
+                ${disk.powerState === 'standby' ? '<span class="tag">Standby 💤</span>' : disk.powerState === 'active' ? '<span class="tag tag-ok">Aktiv</span>' : ''}
               </div>
             </div>
 
@@ -1718,6 +1735,7 @@
     const portainerBase = getPortainerBaseUrl();
     const endpointId = state.snapshot?.portainer?.endpointId || 1;
 
+    const policies = docker.autoUpdate?.policies || {};
     document.getElementById('docker-full-tbody').innerHTML = filteredFull
       .map((c) => {
         const controlBtns = docker.allowControl
@@ -1738,21 +1756,39 @@
         const updTitle = c.updateCheckedAt
           ? `Neueres Image in der Registry verfügbar (geprüft: ${formatDateTimeShort(c.updateCheckedAt)}) — klicken zum Updaten`
           : 'Neueres Image in der Registry verfügbar — klicken zum Updaten';
+        const policy = policies[c.name] || 'off';
+        const memLimitText = c.configuredMemoryLimitBytes
+          ? `Limit ${formatBytesBinary(c.configuredMemoryLimitBytes)}`
+          : (c.state === 'running' ? '<span class="tag tag-warn" style="font-size:10px;">Kein RAM-Limit</span>' : '');
+        const oomBadge = c.oomKilled
+          ? '<span class="tag tag-crit" style="margin-left:5px;font-size:10px;">OOMKilled</span>'
+          : '';
         return `
           <tr>
             <td>
               <div class="container-name">
                 ${escapeHtml(c.name)}
                 ${c.stackName ? `<span class="tag" style="margin-left:5px;font-size:10px;">Stack: ${escapeHtml(c.stackName)}</span>` : ''}
+                ${oomBadge}
                 ${c.updateAvailable ? `<button type="button" class="tag tag-warn" data-update-container="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="${escapeHtml(updTitle)}" style="margin-left:5px;font-size:10px;cursor:pointer;">Update verfügbar</button>` : ''}
               </div>
-              <div class="container-sub mono">${escapeHtml(c.statusText)}</div>
+              <div class="container-sub mono">${escapeHtml(c.statusText)}${c.restartCount > 0 ? ` · ${c.restartCount} Restarts` : ''}</div>
             </td>
             <td class="mono docker-img-cell" title="${escapeHtml(c.image)}">${escapeHtml(c.image)}</td>
             <td>${renderStateBadge(c)}</td>
             <td class="num mono">${c.state === 'running' ? `${c.cpuPercent.toFixed(1)}%` : '—'}</td>
-            <td class="num mono">${c.state === 'running' ? formatBytesBinary(c.memoryBytes) : '—'}</td>
+            <td class="num mono">
+              <div>${c.state === 'running' ? formatBytesBinary(c.memoryBytes) : '—'}</div>
+              ${memLimitText ? `<div style="font-size:10.5px;color:var(--text-muted);">${memLimitText}</div>` : ''}
+            </td>
             <td>${renderPortBadges(c.ports)}</td>
+            <td>
+              <select class="input-sm" data-autoupdate-policy="${escapeHtml(c.name)}" style="min-width:96px;padding:3px 6px;font-size:11.5px;">
+                <option value="off"${policy === 'off' ? ' selected' : ''}>Aus</option>
+                <option value="notify"${policy === 'notify' ? ' selected' : ''}>Melden</option>
+                <option value="auto"${policy === 'auto' ? ' selected' : ''}>Auto</option>
+              </select>
+            </td>
             <td class="num">
               <div class="table-actions-row">
                 ${controlBtns}
@@ -1765,6 +1801,30 @@
         `;
       })
       .join('');
+
+    const oomSummaryEl = document.getElementById('docker-oom-summary');
+    const oomTbody = document.getElementById('docker-oom-tbody');
+    if (oomSummaryEl && oomTbody) {
+      const noLimitCount = docker.containers.filter((c) => c.state === 'running' && !c.configuredMemoryLimitBytes).length;
+      const oomList = Array.isArray(docker.oomHistory) ? docker.oomHistory : [];
+      oomSummaryEl.textContent = `${noLimitCount} laufende Container ohne Memory-Limit · ${oomList.length} erkannte OOMKilled-Ereignisse`;
+      if (oomList.length === 0) {
+        oomTbody.innerHTML = '<tr><td colspan="5" class="muted-text">Bisher keine Out-of-Memory (OOMKilled) Neustarts erkannt.</td></tr>';
+      } else {
+        oomTbody.innerHTML = oomList
+          .slice(0, 30)
+          .map((ev) => `
+            <tr>
+              <td class="mono">${escapeHtml(formatDateTimeShort(ev.ts))}</td>
+              <td><strong>${escapeHtml(ev.name)}</strong></td>
+              <td class="mono">${escapeHtml(ev.image || '—')}</td>
+              <td class="mono">${ev.memoryLimitBytes ? formatBytesBinary(ev.memoryLimitBytes) : 'Kein Limit'} · ${ev.restartCount || 0} Restarts</td>
+              <td><span class="tag tag-crit">OOMKilled</span></td>
+            </tr>
+          `)
+          .join('');
+      }
+    }
   }
 
   // ==================== FILES MANAGER, SHARES & TRASH ====================
@@ -2323,12 +2383,38 @@
     document.getElementById('btn-preview-download').href = `${rawUrl}&download=1`;
 
     const videoControls = document.getElementById('preview-video-controls');
+    const exifBar = document.getElementById('preview-exif-bar');
     const stage = document.getElementById('media-preview-stage');
     videoControls?.classList.add('hidden');
+    if (exifBar) {
+      exifBar.classList.add('hidden');
+      exifBar.innerHTML = '';
+    }
     state.activePreview = { filePath, kind, name, mode: 'native', startSec: 0 };
 
     if (kind === 'image') {
       stage.innerHTML = `<img src="${escapeHtml(rawUrl)}" alt="${escapeHtml(name)}" />`;
+      if (exifBar) {
+        fetch(`/api/files/exif?path=${encodeURIComponent(filePath)}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data) => {
+            if (!data || state.activePreview?.filePath !== filePath) return;
+            const e = data.exif || {};
+            const parts = [];
+            if (e.width && e.height) parts.push(`${e.width}×${e.height} px`);
+            if (e.make || e.model) parts.push([e.make, e.model].filter(Boolean).join(' '));
+            if (e.focalLength) parts.push(e.focalLength);
+            if (e.fNumber) parts.push(e.fNumber);
+            if (e.exposureTime) parts.push(e.exposureTime);
+            if (e.iso) parts.push(`ISO ${e.iso}`);
+            if (e.dateTimeOriginal || e.dateTime) parts.push(e.dateTimeOriginal || e.dateTime);
+            if (parts.length > 0) {
+              exifBar.innerHTML = parts.map((p) => `<span>${escapeHtml(p)}</span>`).join('');
+              exifBar.classList.remove('hidden');
+            }
+          })
+          .catch(() => {});
+      }
     } else if (kind === 'pdf') {
       stage.innerHTML = `<iframe class="pdf-preview-frame" title="PDF Vorschau" src="${escapeHtml(`${rawUrl}&inline=1`)}"></iframe>`;
     } else if (kind === 'video') {
@@ -3136,6 +3222,81 @@
             `)
             .join('');
     }
+
+    // SSH & Fail2ban Monitor
+    const sec = data.security || {};
+    const secSrcEl = document.getElementById('host-security-source');
+    if (secSrcEl) secSrcEl.textContent = sec.authLogAvailable ? 'auth.log' : 'Keine Logs';
+    const sessCountEl = document.getElementById('host-ssh-sessions-count');
+    const activeSessions = Array.isArray(sec.activeSessions) ? sec.activeSessions : [];
+    if (sessCountEl) sessCountEl.textContent = `${activeSessions.length} aktive SSH-Sessions`;
+    const banCountEl = document.getElementById('host-fail2ban-banned-count');
+    const bannedList = Array.isArray(sec.bannedIps) ? sec.bannedIps : [];
+    if (banCountEl) banCountEl.textContent = `${bannedList.length} blockierte IPs`;
+
+    const secTbody = document.getElementById('host-security-tbody');
+    if (secTbody) {
+      const secRows = [];
+      for (const b of bannedList) {
+        secRows.push(`
+          <tr>
+            <td class="mono"><strong>${escapeHtml(b.ip)}</strong></td>
+            <td><span class="tag tag-crit">Fail2ban (${escapeHtml(b.jail || 'sshd')})</span></td>
+            <td class="mono" style="font-size:11px;">${escapeHtml(b.ts || 'Gesperrt')}</td>
+          </tr>
+        `);
+      }
+      for (const f of (sec.failedLogins || []).slice(0, 15)) {
+        secRows.push(`
+          <tr>
+            <td class="mono">${escapeHtml(f.ip || '—')}</td>
+            <td><span class="tag tag-warn">SSH-Fehler</span></td>
+            <td class="mono" style="font-size:11px;">User: ${escapeHtml(f.user || '—')} · ${escapeHtml(f.ts || '')}</td>
+          </tr>
+        `);
+      }
+      secTbody.innerHTML = secRows.length === 0
+        ? '<tr><td colspan="3" class="muted-text">Keine fehlgeschlagenen SSH-Logins oder Fail2ban-Sperren erkannt.</td></tr>'
+        : secRows.join('');
+    }
+
+    // SSL Certificates
+    const sslTbody = document.getElementById('host-ssl-tbody');
+    if (sslTbody) {
+      const sslTargets = data.sslTargets || [];
+      sslTbody.innerHTML = sslTargets.length === 0
+        ? '<tr><td colspan="5" class="muted-text">Noch keine SSL-Domains eingetragen.</td></tr>'
+        : sslTargets
+            .map((s) => {
+              const days = s.daysRemaining;
+              const statusBadge = !s.checkedAt
+                ? '<span class="tag">Ausstehend</span>'
+                : s.error
+                ? `<span class="tag tag-crit">Fehler</span>`
+                : !s.valid
+                ? '<span class="tag tag-crit">Abgelaufen / Ungültig</span>'
+                : days <= 14
+                ? '<span class="tag tag-warn">Läuft bald ab</span>'
+                : '<span class="tag tag-ok">Gültig</span>';
+              const daysStr = Number.isFinite(days) ? `${days} Tage` : '—';
+              return `
+                <tr>
+                  <td>
+                    <strong>${escapeHtml(s.name)}</strong>
+                    <div class="mono" style="font-size:11px;color:var(--text-muted);">${escapeHtml(s.host)}:${Number(s.port) || 443}${s.issuer ? ` · ${escapeHtml(s.issuer)}` : ''}</div>
+                  </td>
+                  <td>
+                    ${statusBadge}
+                    ${s.error ? `<div class="mono" style="font-size:10.5px;color:var(--text-muted);">${escapeHtml(s.error)}</div>` : ''}
+                  </td>
+                  <td class="num mono">${escapeHtml(daysStr)}</td>
+                  <td class="mono" style="font-size:11px;">${s.checkedAt ? escapeHtml(formatDateTimeShort(s.checkedAt)) : '—'}</td>
+                  <td class="num"><button type="button" class="btn-danger-ghost btn-xs" data-del-ssl="${escapeHtml(s.id)}">Entfernen</button></td>
+                </tr>
+              `;
+            })
+            .join('');
+    }
   }
 
   // ==================== PUSH NOTIFICATIONS & SECURITY AUDIT ====================
@@ -3257,6 +3418,17 @@
         }
       }
       document.getElementById('btn-logout')?.classList.toggle('hidden', !meta.authEnabled);
+      const totpBadge = document.getElementById('totp-status-badge');
+      const totpStartWrap = document.getElementById('totp-setup-start-wrap');
+      const totpDisableForm = document.getElementById('form-totp-disable');
+      const totpSetupPanel = document.getElementById('totp-setup-panel');
+      if (totpBadge) {
+        totpBadge.textContent = meta.totpEnabled ? 'Aktiv' : 'Deaktiviert';
+        totpBadge.className = `tag ${meta.totpEnabled ? 'tag-ok' : ''}`;
+      }
+      if (totpStartWrap) totpStartWrap.classList.toggle('hidden', Boolean(meta.totpEnabled));
+      if (totpDisableForm) totpDisableForm.classList.toggle('hidden', !meta.totpEnabled);
+      if (meta.totpEnabled && totpSetupPanel) totpSetupPanel.classList.add('hidden');
     } catch {
       // ignore
     }
@@ -3295,9 +3467,15 @@
   // ==================== AUTOMATION, WATCHDOG & WAKE-ON-LAN ====================
   async function loadAutomationState() {
     try {
-      const res = await fetch('/api/automation/state', { cache: 'no-store' });
+      const [res, auRes] = await Promise.all([
+        fetch('/api/automation/state', { cache: 'no-store' }),
+        fetch('/api/docker/autoupdate', { cache: 'no-store' })
+      ]);
       if (!res.ok) return;
       state.automationData = await res.json();
+      if (auRes.ok) {
+        state.autoUpdateConfig = await auRes.json();
+      }
       renderAutomationView();
     } catch {
       // ignore
@@ -3420,6 +3598,19 @@
             })
             .join('');
     }
+
+    const au = state.autoUpdateConfig || {};
+    const auBadge = document.getElementById('autoupdate-status-badge');
+    if (auBadge) {
+      auBadge.textContent = au.enabled ? `Aktiv (${au.timeHHMM || '03:00'})` : 'Deaktiviert';
+      auBadge.className = `tag ${au.enabled ? 'tag-ok' : ''}`;
+    }
+    const auEnabledEl = document.getElementById('autoupdate-enabled');
+    if (auEnabledEl) auEnabledEl.checked = Boolean(au.enabled);
+    const auTimeEl = document.getElementById('autoupdate-time');
+    if (auTimeEl) auTimeEl.value = au.timeHHMM || '03:00';
+    const auLastEl = document.getElementById('autoupdate-last-run');
+    if (auLastEl) auLastEl.textContent = au.lastRunAt ? formatDateTimeShort(au.lastRunAt) : 'Noch kein Lauf';
   }
 
   // ==================== SETTINGS VIEW ====================
@@ -3429,6 +3620,13 @@
     if (!settingsPopulated) {
       document.getElementById('input-server-name').value = cfg.serverName || '';
       document.getElementById('input-media-paths').value = (cfg.mediaPaths || []).join(', ');
+      const pwr = cfg.power || {};
+      const idleEl = document.getElementById('input-power-idle');
+      const maxEl = document.getElementById('input-power-max');
+      const kwhEl = document.getElementById('input-power-kwh');
+      if (idleEl) idleEl.value = pwr.idleWatts ?? 18;
+      if (maxEl) maxEl.value = pwr.maxWatts ?? 65;
+      if (kwhEl) kwhEl.value = pwr.kwhPriceEur ?? 0.32;
       const detected = data.portainer?.detectedUrl ? resolveServiceUrl(data.portainer.detectedUrl) : '';
       document.getElementById('input-portainer-url').value = cfg.portainerUrl || detected || '';
       settingsPopulated = true;
@@ -3597,7 +3795,11 @@
       btn.addEventListener('click', () => {
         state.chartRangeSec = Number(btn.dataset.chartRange) || 60;
         document.querySelectorAll('[data-chart-range]').forEach((b) => b.classList.toggle('active', b === btn));
-        drawTelemetryChart();
+        if (state.chartRangeSec > 900) {
+          loadTelemetryHistory(state.chartRangeSec);
+        } else {
+          drawTelemetryChart();
+        }
       });
     });
 
@@ -3966,17 +4168,48 @@
       else state.selectedTrashKeys.clear();
       renderTrashView();
     });
-    document.getElementById('btn-trash-restore-sel').addEventListener('click', async () => {
-      const keys = [...state.selectedTrashKeys];
-      if (keys.length === 0) return;
+    async function performTrashRestore(keys, conflictMode = 'check') {
       const res = await fetch('/api/files/trash/restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trashKeys: keys })
+        body: JSON.stringify({ trashKeys: keys, conflictMode })
       });
+      if (res.status === 409) {
+        const data = await res.json().catch(() => ({}));
+        state.pendingTrashRestoreKeys = keys;
+        const listEl = document.getElementById('trash-conflict-list');
+        if (listEl) {
+          listEl.innerHTML = (data.conflicts || [])
+            .map((c) => `<div>• <strong>${escapeHtml(c.name)}</strong> → ${escapeHtml(c.originalPath)}</div>`)
+            .join('') || escapeHtml(data.message || 'Ziel existiert bereits.');
+        }
+        openModal('modal-trash-conflict');
+        return;
+      }
       if (!res.ok) alert((await res.json().catch(() => ({}))).error || 'Wiederherstellen fehlgeschlagen');
       await loadTrashView();
       refreshTrashBadge();
+    }
+    window.__performTrashRestore = performTrashRestore;
+
+    document.getElementById('btn-trash-restore-sel').addEventListener('click', async () => {
+      const keys = [...state.selectedTrashKeys];
+      if (keys.length === 0) return;
+      await performTrashRestore(keys, 'check');
+    });
+    document.getElementById('btn-trash-conflict-rename')?.addEventListener('click', async () => {
+      closeModal('modal-trash-conflict');
+      if (state.pendingTrashRestoreKeys?.length) {
+        await performTrashRestore(state.pendingTrashRestoreKeys, 'rename');
+        state.pendingTrashRestoreKeys = [];
+      }
+    });
+    document.getElementById('btn-trash-conflict-overwrite')?.addEventListener('click', async () => {
+      closeModal('modal-trash-conflict');
+      if (state.pendingTrashRestoreKeys?.length) {
+        await performTrashRestore(state.pendingTrashRestoreKeys, 'overwrite');
+        state.pendingTrashRestoreKeys = [];
+      }
     });
     document.getElementById('btn-trash-delete-sel').addEventListener('click', async () => {
       const keys = [...state.selectedTrashKeys];
@@ -5260,6 +5493,43 @@
         return;
       }
 
+      const editPortainerStackBtn = e.target.closest('[data-edit-portainer-stack]');
+      if (editPortainerStackBtn) {
+        const sid = editPortainerStackBtn.dataset.editPortainerStack;
+        const sname = editPortainerStackBtn.dataset.pstackName || sid;
+        editPortainerStackBtn.disabled = true;
+        try {
+          const res = await fetch(`/api/portainer/stacks/${encodeURIComponent(sid)}/yaml`);
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || 'Stack-YAML konnte nicht geladen werden');
+          if (window.__openComposeModal) {
+            window.__openComposeModal(sname, data.yaml || '');
+          }
+        } catch (err) {
+          alert(err.message);
+        } finally {
+          editPortainerStackBtn.disabled = false;
+        }
+        return;
+      }
+
+      const delSslBtn = e.target.closest('[data-del-ssl]');
+      if (delSslBtn) {
+        const sslId = delSslBtn.dataset.delSsl;
+        const current = (state.hostData?.sslTargets || []).filter((t) => t.id !== sslId);
+        const res = await fetch('/api/host/ssl-targets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targets: current })
+        });
+        if (res.ok) {
+          const payload = await res.json();
+          if (state.hostData) state.hostData.sslTargets = payload.targets || [];
+          renderHostView();
+        }
+        return;
+      }
+
       const stackActionBtn = e.target.closest('[data-stack-action]');
       if (stackActionBtn) {
         const stack = stackActionBtn.dataset.stack;
@@ -5482,9 +5752,14 @@
       e.preventDefault();
       const serverName = document.getElementById('input-server-name').value.trim();
       const mediaPaths = document.getElementById('input-media-paths').value.split(',').map((p) => p.trim()).filter(Boolean);
+      const power = {
+        idleWatts: Number(document.getElementById('input-power-idle')?.value) || 18,
+        maxWatts: Number(document.getElementById('input-power-max')?.value) || 65,
+        kwhPriceEur: Number(document.getElementById('input-power-kwh')?.value) || 0.32
+      };
       const msg = document.getElementById('settings-save-msg');
       try {
-        await saveConfigPatch({ serverName, mediaPaths });
+        await saveConfigPatch({ serverName, mediaPaths, power });
         msg.textContent = 'Gespeichert!';
       } catch (err) {
         msg.textContent = `Fehler: ${err.message}`;
@@ -5521,18 +5796,177 @@
 
     document.getElementById('btn-refresh-audit')?.addEventListener('click', loadAuditLog);
 
+    // 2FA / TOTP Setup & Disable
+    document.getElementById('btn-totp-setup')?.addEventListener('click', async () => {
+      const res = await fetch('/api/auth/totp/setup', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || '2FA-Setup fehlgeschlagen');
+        return;
+      }
+      document.getElementById('totp-secret-text').textContent = data.secret || '—';
+      const qrBox = document.getElementById('totp-qr-box');
+      if (qrBox && window.renderQrSvg && data.otpauthUrl) {
+        qrBox.innerHTML = window.renderQrSvg(data.otpauthUrl, 160);
+      }
+      document.getElementById('totp-enable-error')?.classList.add('hidden');
+      document.getElementById('totp-backup-codes-box')?.classList.add('hidden');
+      document.getElementById('totp-setup-panel')?.classList.remove('hidden');
+    });
+
+    document.getElementById('form-totp-enable')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = document.getElementById('totp-verify-code').value.trim();
+      const errEl = document.getElementById('totp-enable-error');
+      errEl?.classList.add('hidden');
+      const res = await fetch('/api/auth/totp/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (errEl) {
+          errEl.textContent = data.error || 'Ungültiger Code';
+          errEl.classList.remove('hidden');
+        }
+        return;
+      }
+      document.getElementById('form-totp-enable').reset();
+      document.getElementById('totp-setup-panel')?.classList.add('hidden');
+      const bcList = document.getElementById('totp-backup-codes-list');
+      if (bcList && Array.isArray(data.backupCodes)) {
+        bcList.innerHTML = data.backupCodes.map((c) => `<span class="tag">${escapeHtml(c)}</span>`).join('');
+        document.getElementById('totp-backup-codes-box')?.classList.remove('hidden');
+      }
+      loadAuthMeta();
+      loadAuditLog();
+    });
+
+    document.getElementById('form-totp-disable')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const currentPassword = document.getElementById('totp-disable-pw').value;
+      const msg = document.getElementById('totp-disable-msg');
+      const res = await fetch('/api/auth/totp/disable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (msg) msg.textContent = `Fehler: ${data.error || 'Deaktivierung fehlgeschlagen'}`;
+        return;
+      }
+      document.getElementById('form-totp-disable').reset();
+      document.getElementById('totp-backup-codes-box')?.classList.add('hidden');
+      if (msg) msg.textContent = '2FA deaktiviert.';
+      setTimeout(() => { if (msg) msg.textContent = ''; }, 3000);
+      loadAuthMeta();
+      loadAuditLog();
+    });
+
+    // SSL Checker
+    document.getElementById('form-ssl-add')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('ssl-name').value.trim();
+      const host = document.getElementById('ssl-host').value.trim();
+      const port = Number(document.getElementById('ssl-port').value) || 443;
+      const current = [...(state.hostData?.sslTargets || []), { id: `ssl-${Date.now()}`, name, host, port }];
+      const res = await fetch('/api/host/ssl-targets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targets: current })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (state.hostData) state.hostData.sslTargets = data.targets || [];
+        document.getElementById('form-ssl-add').reset();
+        document.getElementById('ssl-port').value = '443';
+        renderHostView();
+      }
+    });
+
+    document.getElementById('btn-ssl-check-now')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-ssl-check-now');
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch('/api/host/ssl-check', { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          if (state.hostData) state.hostData.sslTargets = data.targets || [];
+          renderHostView();
+        }
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+
+    // Docker Auto-Update (Per-Container Policy & Schedule)
+    document.getElementById('docker-full-tbody')?.addEventListener('change', async (e) => {
+      const sel = e.target.closest('[data-autoupdate-policy]');
+      if (!sel) return;
+      const name = sel.dataset.autoupdatePolicy;
+      const policy = sel.value;
+      const res = await fetch('/api/docker/autoupdate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ policies: { [name]: policy } })
+      });
+      if (res.ok) {
+        state.autoUpdateConfig = await res.json();
+      }
+    });
+
+    document.getElementById('form-autoupdate')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const enabled = document.getElementById('autoupdate-enabled').checked;
+      const timeHHMM = document.getElementById('autoupdate-time').value || '03:00';
+      const msg = document.getElementById('autoupdate-save-msg');
+      const res = await fetch('/api/docker/autoupdate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, timeHHMM })
+      });
+      if (res.ok) {
+        state.autoUpdateConfig = await res.json();
+        renderAutomationView();
+        if (msg) msg.textContent = 'Gespeichert!';
+        setTimeout(() => { if (msg) msg.textContent = ''; }, 2500);
+      }
+    });
+
+    document.getElementById('btn-autoupdate-run-now')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-autoupdate-run-now');
+      const msg = document.getElementById('autoupdate-save-msg');
+      if (btn) btn.disabled = true;
+      if (msg) msg.textContent = 'Prüfe Images…';
+      try {
+        const res = await fetch('/api/docker/autoupdate/run', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (msg) msg.textContent = `Fertig: ${data.updated?.length || 0} aktualisiert, ${data.notified?.length || 0} Updates gefunden.`;
+        await loadAutomationState();
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+
     document.getElementById('form-login').addEventListener('submit', async (e) => {
       e.preventDefault();
       const password = document.getElementById('login-password').value;
+      const totpCode = document.getElementById('login-totp')?.value.trim() || '';
       const errEl = document.getElementById('login-error');
       errEl.classList.add('hidden');
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password })
+        body: JSON.stringify({ password, totpCode })
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
+        if (d.totpRequired) {
+          document.getElementById('login-totp-group')?.classList.remove('hidden');
+          document.getElementById('login-totp')?.focus();
+        }
         errEl.textContent = d.error || 'Falsches Passwort.';
         errEl.classList.remove('hidden');
         return;

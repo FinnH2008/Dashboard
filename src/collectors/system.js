@@ -378,7 +378,72 @@ function triggerHostPower(action) {
   return { ok: true, action };
 }
 
-function collectSystemMetrics(customServerName) {
+let prevRapl = null; // { energyUj, ts }
+
+function readRaplEnergyUj() {
+  const candidates = [
+    '/host/sys/class/powercap/intel-rapl:0/energy_uj',
+    '/sys/class/powercap/intel-rapl:0/energy_uj'
+  ];
+  for (const file of candidates) {
+    try {
+      if (fs.existsSync(file)) {
+        const val = Number(fs.readFileSync(file, 'utf8').trim());
+        if (Number.isFinite(val) && val >= 0) return val;
+      }
+    } catch {
+      // ignore permission or missing file
+    }
+  }
+  return null;
+}
+
+function getPowerEstimate(cpuUsagePercent, powerConfig = null) {
+  const idleWatts = Math.max(1, Number(powerConfig?.idleWatts) || 18);
+  const maxWatts = Math.max(idleWatts, Number(powerConfig?.maxWatts) || 65);
+  const kwhPriceEur = Math.max(0.01, Number(powerConfig?.kwhPriceEur) || 0.32);
+
+  let watts = null;
+  let source = 'estimated';
+
+  const energyUj = readRaplEnergyUj();
+  const now = Date.now();
+  if (energyUj !== null) {
+    if (prevRapl && now > prevRapl.ts && energyUj >= prevRapl.energyUj) {
+      const dtSec = (now - prevRapl.ts) / 1000;
+      const dJoules = (energyUj - prevRapl.energyUj) / 1_000_000;
+      if (dtSec >= 0.4 && dJoules >= 0) {
+        const pkgWatts = dJoules / dtSec;
+        // Package power + base system overhead (fans, RAM, drives)
+        watts = Math.round((pkgWatts + idleWatts * 0.45) * 10) / 10;
+        source = 'rapl';
+      }
+    }
+    prevRapl = { energyUj, ts: now };
+  }
+
+  if (watts === null) {
+    const loadRatio = Math.max(0, Math.min(1, (Number(cpuUsagePercent) || 0) / 100));
+    watts = Math.round((idleWatts + (maxWatts - idleWatts) * loadRatio) * 10) / 10;
+  }
+
+  const dailyKwh = Math.round(((watts * 24) / 1000) * 100) / 100;
+  const monthlyKwh = Math.round(dailyKwh * 30 * 10) / 10;
+  const monthlyCostEur = Math.round(monthlyKwh * kwhPriceEur * 100) / 100;
+
+  return {
+    watts,
+    source,
+    dailyKwh,
+    monthlyKwh,
+    monthlyCostEur,
+    kwhPriceEur,
+    idleWatts,
+    maxWatts
+  };
+}
+
+function collectSystemMetrics(customServerName, powerConfig = null) {
   const cpuInfo = os.cpus();
   const cpuModel = (cpuInfo[0] && cpuInfo[0].model ? cpuInfo[0].model : 'Linux CPU')
     .replace(/\s+/g, ' ')
@@ -388,6 +453,7 @@ function collectSystemMetrics(customServerName) {
   const temperatures = getTemperatures();
   const network = getNetworkThroughput();
   const loadAvg = getLoadAvg();
+  const power = getPowerEstimate(cpuUsage.totalPercent, powerConfig);
 
   return {
     allowPower: ALLOW_HOST_POWER,
@@ -409,6 +475,7 @@ function collectSystemMetrics(customServerName) {
     memory,
     temperatures,
     network,
+    power,
     timestamp: new Date().toISOString()
   };
 }

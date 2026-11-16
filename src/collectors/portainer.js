@@ -336,10 +336,24 @@ async function controlPortainerStack(stackId, action, config) {
   return { ok: true, id: stackId, action };
 }
 
+async function getPortainerStackFile(stackId, config) {
+  const baseUrl = normalizeUrl(config?.portainerUrl);
+  const apiKey = config?.portainerApiKey || '';
+  if (!baseUrl || !apiKey) {
+    throw new Error('Portainer-URL und API-Token erforderlich.');
+  }
+  const res = await portainerRequest('GET', baseUrl, apiKey, `/api/stacks/${encodeURIComponent(stackId)}/file`);
+  return {
+    id: stackId,
+    yaml: res?.StackFileContent || ''
+  };
+}
+
 module.exports = {
   fetchPortainerStatus,
   testPortainerConnection,
   deployStackViaPortainer,
   controlPortainerStack,
+  getPortainerStackFile,
   invalidatePortainerCache
 };

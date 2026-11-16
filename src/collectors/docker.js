@@ -213,6 +213,143 @@ function triggerStatsRefresh(runningIds) {
   })();
 }
 
+// ==================== LIMITS, OOMKILLED & AUTO-UPDATE PERSISTENCE ====================
+const inspectMetaCache = new Map(); // id -> { memoryLimitBytes, nanoCpus, oomKilled, restartCount }
+let inspectRefreshInFlight = false;
+let lastInspectRefreshTs = 0;
+const INSPECT_REFRESH_MS = 15_000;
+const recordedOomKeys = new Set();
+
+function getOomHistoryFile() {
+  const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+  return path.join(dataDir, 'docker-oom-history.json');
+}
+
+function loadOomHistory() {
+  try {
+    const file = getOomHistoryFile();
+    if (!fs.existsSync(file)) return [];
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(parsed?.events) ? parsed.events : [];
+  } catch {
+    return [];
+  }
+}
+
+function recordOomEvent(event) {
+  const key = `${event.id}:${event.restartCount}`;
+  if (recordedOomKeys.has(key)) return;
+  recordedOomKeys.add(key);
+
+  const existing = loadOomHistory();
+  if (existing.some((e) => e.id === event.id && e.restartCount === event.restartCount)) return;
+  existing.unshift(event);
+  if (existing.length > 50) existing.length = 50;
+  try {
+    const file = getOomHistoryFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ updatedAt: new Date().toISOString(), events: existing }, null, 2), 'utf8');
+  } catch {
+    // ignore fs errors
+  }
+}
+
+function triggerInspectMetaRefresh(rawList) {
+  const now = Date.now();
+  if (inspectRefreshInFlight || rawList.length === 0 || now - lastInspectRefreshTs < INSPECT_REFRESH_MS) {
+    return;
+  }
+  inspectRefreshInFlight = true;
+  lastInspectRefreshTs = now;
+  (async () => {
+    try {
+      const batchSize = 4;
+      for (let i = 0; i < rawList.length; i += batchSize) {
+        const batch = rawList.slice(i, i + batchSize);
+        await Promise.all(
+          batch.map(async (c) => {
+            try {
+              const info = await dockerJson('GET', `/containers/${c.Id}/json`, 2500);
+              const memoryLimitBytes = Number(info?.HostConfig?.Memory) || 0;
+              const nanoCpus = Number(info?.HostConfig?.NanoCpus) || 0;
+              const oomKilled = Boolean(info?.State?.OOMKilled);
+              const restartCount = Number(info?.RestartCount) || 0;
+              inspectMetaCache.set(c.Id, { memoryLimitBytes, nanoCpus, oomKilled, restartCount });
+              if (oomKilled) {
+                const cname = (c.Names?.[0] || c.Id.slice(0, 12)).replace(/^\//, '');
+                recordOomEvent({
+                  ts: info?.State?.FinishedAt || new Date().toISOString(),
+                  id: c.Id.slice(0, 12),
+                  name: cname,
+                  image: c.Image,
+                  restartCount,
+                  memoryLimitBytes
+                });
+              }
+            } catch {
+              // ignore transient inspect error
+            }
+          })
+        );
+      }
+    } finally {
+      inspectRefreshInFlight = false;
+    }
+  })();
+}
+
+function getAutoUpdateFile() {
+  const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+  return path.join(dataDir, 'docker-autoupdate.json');
+}
+
+function loadAutoUpdateConfig() {
+  const defaults = {
+    enabled: false,
+    timeHHMM: '03:00',
+    lastRunDate: null,
+    lastRunAt: null,
+    policies: {},
+    lastResults: []
+  };
+  try {
+    const file = getAutoUpdateFile();
+    if (!fs.existsSync(file)) return defaults;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return {
+      enabled: Boolean(parsed?.enabled),
+      timeHHMM: /^\d{2}:\d{2}$/.test(String(parsed?.timeHHMM || '')) ? String(parsed.timeHHMM) : '03:00',
+      lastRunDate: parsed?.lastRunDate || null,
+      lastRunAt: parsed?.lastRunAt || null,
+      policies: parsed?.policies && typeof parsed.policies === 'object' ? parsed.policies : {},
+      lastResults: Array.isArray(parsed?.lastResults) ? parsed.lastResults.slice(0, 30) : []
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function saveAutoUpdateConfig(patch = {}) {
+  const cur = loadAutoUpdateConfig();
+  const next = {
+    enabled: patch.enabled !== undefined ? Boolean(patch.enabled) : cur.enabled,
+    timeHHMM: /^\d{2}:\d{2}$/.test(String(patch.timeHHMM || '')) ? String(patch.timeHHMM) : cur.timeHHMM,
+    lastRunDate: patch.lastRunDate !== undefined ? patch.lastRunDate : cur.lastRunDate,
+    lastRunAt: patch.lastRunAt !== undefined ? patch.lastRunAt : cur.lastRunAt,
+    policies: patch.policies && typeof patch.policies === 'object' ? { ...cur.policies, ...patch.policies } : cur.policies,
+    lastResults: Array.isArray(patch.lastResults) ? patch.lastResults.slice(0, 30) : cur.lastResults
+  };
+  for (const [k, v] of Object.entries(next.policies)) {
+    if (!['off', 'notify', 'auto'].includes(v)) {
+      delete next.policies[k];
+    }
+  }
+  const file = getAutoUpdateFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(next, null, 2), 'utf8');
+  return next;
+}
+
 async function collectDockerContainers() {
   loadDockerCache();
   const nowIso = new Date().toISOString();
@@ -875,6 +1012,54 @@ async function pruneDockerResources({ images = true, buildCache = true, volumes 
   };
 }
 
+async function runAutoUpdatePass(notifyFn = null) {
+  const cfg = loadAutoUpdateConfig();
+  const check = await checkContainerUpdates();
+  const nowIso = new Date().toISOString();
+  const todayStr = nowIso.slice(0, 10);
+  const runResults = [];
+
+  for (const c of check.results || []) {
+    const policy = cfg.policies[c.name] || 'off';
+    if (policy === 'off' || !c.updateAvailable) continue;
+
+    if (policy === 'notify') {
+      runResults.push({ ts: nowIso, name: c.name, image: c.image, action: 'notify', ok: true, message: 'Update verfügbar' });
+      if (typeof notifyFn === 'function') {
+        notifyFn(`docker-upd:${c.name}`, `Container-Update verfügbar: ${c.name}`, `Für ${c.name} (${c.image}) liegt ein neueres Image vor.`, 'info').catch(() => {});
+      }
+    } else if (policy === 'auto') {
+      if (!ALLOW_CONTROL) {
+        runResults.push({ ts: nowIso, name: c.name, image: c.image, action: 'auto', ok: false, message: 'ALLOW_DOCKER_CONTROL=false' });
+        continue;
+      }
+      try {
+        await recreateOrUpdateContainer(c.id, null);
+        runResults.push({ ts: nowIso, name: c.name, image: c.image, action: 'auto', ok: true, message: 'Automatisch aktualisiert' });
+        if (typeof notifyFn === 'function') {
+          notifyFn(`docker-autoupd:${c.name}`, `Auto-Update abgeschlossen: ${c.name}`, `Container ${c.name} (${c.image}) wurde automatisch aktualisiert.`, 'ok').catch(() => {});
+        }
+      } catch (err) {
+        runResults.push({ ts: nowIso, name: c.name, image: c.image, action: 'auto', ok: false, message: err.message });
+      }
+    }
+  }
+
+  const mergedResults = [...runResults, ...(cfg.lastResults || [])].slice(0, 30);
+  const updatedCfg = saveAutoUpdateConfig({
+    lastRunDate: todayStr,
+    lastRunAt: nowIso,
+    lastResults: mergedResults
+  });
+
+  return {
+    checkedAt: check.checkedAt,
+    updatesAvailable: check.updatesAvailable,
+    results: runResults,
+    config: updatedCfg
+  };
+}
+
 module.exports = {
   dockerRequest,
   dockerJson,
@@ -888,5 +1073,9 @@ module.exports = {
   recreateOrUpdateContainer,
   checkContainerUpdates,
   getDockerDiskUsage,
-  pruneDockerResources
+  pruneDockerResources,
+  loadOomHistory,
+  loadAutoUpdateConfig,
+  saveAutoUpdateConfig,
+  runAutoUpdatePass
 };

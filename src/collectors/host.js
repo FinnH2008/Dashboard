@@ -456,6 +456,131 @@ async function checkAllPingTargets() {
   return checked;
 }
 
+const { loadSslTargets } = require('./ssl');
+
+function readTailUtf8(filePath, maxBytes = 262144) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const stat = fs.statSync(filePath);
+    const size = stat.size;
+    const start = Math.max(0, size - maxBytes);
+    const len = size - start;
+    if (len <= 0) return '';
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, start);
+      return buf.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+function resolveLogFile(envKey, candidates) {
+  const override = (process.env[envKey] || '').trim();
+  if (override && fs.existsSync(override)) return override;
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+function collectSshAndFail2ban(processes = []) {
+  const checkedAt = new Date().toISOString();
+  const authLogPath = resolveLogFile('HOST_AUTH_LOG', [
+    '/host/var/log/auth.log',
+    '/host/var/log/secure',
+    '/var/log/auth.log',
+    '/var/log/secure'
+  ]);
+  const f2bLogPath = resolveLogFile('HOST_FAIL2BAN_LOG', [
+    '/host/var/log/fail2ban.log',
+    '/var/log/fail2ban.log'
+  ]);
+
+  const activeSessions = [];
+  for (const p of processes) {
+    const cmd = String(p.command || p.name || '');
+    if (/sshd:\s+([^\s\[]+)/i.test(cmd) && !cmd.includes('[listener]') && !cmd.includes('[net]')) {
+      const m = cmd.match(/sshd:\s+([^\s\[@]+)/i);
+      activeSessions.push({
+        pid: p.pid,
+        user: m ? m[1] : 'ssh',
+        command: cmd
+      });
+    }
+  }
+
+  const failedLogins = [];
+  const acceptedLogins = [];
+  if (authLogPath) {
+    const raw = readTailUtf8(authLogPath) || '';
+    const lines = raw.split('\n');
+    for (let i = lines.length - 1; i >= 0 && (failedLogins.length < 25 || acceptedLogins.length < 10); i -= 1) {
+      const line = lines[i];
+      if (!line || !line.includes('sshd')) continue;
+      const tsMatch = line.match(/^(\d{4}-\d{2}-\d{2}T\S+|[A-Z][a-z]{2}\s+\d+\s+\d{2}:\d{2}:\d{2})/);
+      const ts = tsMatch ? tsMatch[1] : '';
+
+      if (failedLogins.length < 25 && (/Failed password/i.test(line) || /Invalid user/i.test(line))) {
+        const userMatch = line.match(/(?:for invalid user|for|Invalid user)\s+(\S+)/i);
+        const ipMatch = line.match(/from\s+([0-9a-fA-F.:]+)/);
+        failedLogins.push({
+          ts,
+          user: userMatch ? userMatch[1] : 'unknown',
+          ip: ipMatch ? ipMatch[1] : '—',
+          reason: /Invalid user/i.test(line) ? 'Ungültiger Benutzer' : 'Falsches Passwort'
+        });
+      } else if (acceptedLogins.length < 10 && /Accepted\s+(?:password|publickey)/i.test(line)) {
+        const m = line.match(/Accepted\s+(\S+)\s+for\s+(\S+)\s+from\s+([0-9a-fA-F.:]+)/i);
+        if (m) {
+          acceptedLogins.push({
+            ts,
+            method: m[1],
+            user: m[2],
+            ip: m[3]
+          });
+        }
+      }
+    }
+  }
+
+  const bannedMap = new Map();
+  const recentBans = [];
+  if (f2bLogPath) {
+    const raw = readTailUtf8(f2bLogPath) || '';
+    const lines = raw.split('\n');
+    for (const line of lines) {
+      if (!line) continue;
+      const banMatch = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:,\d+)?)\s+.*\[([^\]]+)\]\s+(Ban|Unban)\s+([0-9a-fA-F.:]+)/);
+      if (!banMatch) continue;
+      const [, ts, jail, action, ip] = banMatch;
+      const cleanTs = ts.replace(',', '.');
+      if (action === 'Ban') {
+        bannedMap.set(`${jail}:${ip}`, { ip, jail, ts: cleanTs });
+        recentBans.unshift({ ip, jail, action: 'Ban', ts: cleanTs });
+      } else {
+        bannedMap.delete(`${jail}:${ip}`);
+        recentBans.unshift({ ip, jail, action: 'Unban', ts: cleanTs });
+      }
+    }
+  }
+
+  return {
+    checkedAt,
+    authLogAvailable: Boolean(authLogPath),
+    fail2banLogAvailable: Boolean(f2bLogPath),
+    activeSessions,
+    failedLogins,
+    acceptedLogins,
+    bannedIps: Array.from(bannedMap.values()),
+    recentBans: recentBans.slice(0, 20)
+  };
+}
+
 function saveHostCacheSnapshot(payload) {
   try {
     ensureDataDir();
@@ -467,6 +592,8 @@ function saveHostCacheSnapshot(payload) {
           procSource: payload.procSource,
           sysSource: payload.sysSource,
           vpn: payload.vpn,
+          security: payload.security || null,
+          sslTargets: payload.sslTargets || [],
           processes: payload.processes || [],
           ports: payload.ports || [],
           processesCount: (payload.processes || []).length,
@@ -500,6 +627,8 @@ async function collectHostAndNetworkStatus(dockerContainers = []) {
   ]);
   const ports = collectListeningPorts(dockerContainers);
   const vpn = collectVpnStatus(dockerContainers);
+  const security = collectSshAndFail2ban(processes);
+  const sslTargets = loadSslTargets();
   const collectedAt = new Date().toISOString();
 
   const payload = {
@@ -509,6 +638,8 @@ async function collectHostAndNetworkStatus(dockerContainers = []) {
     processes,
     ports,
     vpn,
+    security,
+    sslTargets,
     pingTargets
   };
   saveHostCacheSnapshot(payload);

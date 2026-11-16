@@ -584,7 +584,10 @@ async function moveItemsToTrash(paths, configMediaPaths = []) {
   return { ok: true, trashed: movedCount };
 }
 
-async function listTrash(configMediaPaths = []) {
+async function listTrash(configMediaPaths = [], maxAgeDays = 30) {
+  const days = Math.max(1, Number(maxAgeDays) || 30);
+  const ttlMs = days * 24 * 60 * 60 * 1000;
+  const now = Date.now();
   const roots = getAllowedRoots(configMediaPaths);
   const all = [];
   for (const rootPath of roots) {
@@ -595,9 +598,15 @@ async function listTrash(configMediaPaths = []) {
       const storedPath = path.join(trashDir, item.id);
       if (fs.existsSync(storedPath)) {
         valid.push(item);
+        const deletedMs = item.deletedAt ? new Date(item.deletedAt).getTime() : now;
+        const expiresMs = deletedMs + ttlMs;
+        const remainingDays = Math.max(0, Math.ceil((expiresMs - now) / (24 * 60 * 60 * 1000)));
         all.push({
           ...item,
-          trashKey: `${rootPath}::${item.id}`
+          trashKey: `${rootPath}::${item.id}`,
+          expiresAt: new Date(expiresMs).toISOString(),
+          remainingDays,
+          retentionDays: days
         });
       }
     }
@@ -606,13 +615,46 @@ async function listTrash(configMediaPaths = []) {
     }
   }
   all.sort((a, b) => String(b.deletedAt).localeCompare(String(a.deletedAt)));
-  return { allowWrite: ALLOW_WRITE, items: all };
+  return { allowWrite: ALLOW_WRITE, retentionDays: days, items: all };
 }
 
-async function restoreFromTrash(items, configMediaPaths = []) {
+async function restoreFromTrash(items, configMediaPaths = [], conflictMode = 'rename') {
   if (!ALLOW_WRITE) throw new Error('Schreibzugriff ist deaktiviert.');
   const list = Array.isArray(items) ? items : [items];
   const roots = getAllowedRoots(configMediaPaths);
+  const mode = ['check', 'overwrite', 'rename'].includes(conflictMode) ? conflictMode : 'rename';
+
+  if (mode === 'check') {
+    const conflicts = [];
+    for (const entry of list) {
+      const rawKey = typeof entry === 'string' ? entry : entry?.trashKey || '';
+      const [rootHint, id] = rawKey.includes('::') ? rawKey.split('::') : [null, rawKey];
+      if (!id) continue;
+      for (const rootPath of roots) {
+        if (rootHint && rootPath !== rootHint) continue;
+        const manifest = await readTrashManifest(rootPath);
+        const meta = manifest.find((m) => m.id === id);
+        if (!meta) continue;
+        if (fs.existsSync(meta.originalPath)) {
+          conflicts.push({
+            trashKey: `${rootPath}::${meta.id}`,
+            name: meta.name,
+            originalPath: meta.originalPath
+          });
+        }
+        break;
+      }
+    }
+    if (conflicts.length > 0) {
+      return {
+        ok: false,
+        conflict: true,
+        conflicts,
+        message: `${conflicts.length} Ziel-Datei(en) existieren bereits am ursprünglichen Speicherort.`
+      };
+    }
+  }
+
   let restored = 0;
 
   for (const entry of list) {
@@ -638,9 +680,13 @@ async function restoreFromTrash(items, configMediaPaths = []) {
       await fsp.mkdir(targetDir, { recursive: true });
       let destPath = meta.originalPath;
       if (fs.existsSync(destPath)) {
-        const ext = meta.isDirectory ? '' : path.extname(meta.name);
-        const base = meta.isDirectory ? meta.name : path.basename(meta.name, ext);
-        destPath = path.join(targetDir, `${base} (wiederhergestellt ${Date.now()})${ext}`);
+        if (mode === 'overwrite') {
+          await fsp.rm(destPath, { recursive: true, force: true });
+        } else {
+          const ext = meta.isDirectory ? '' : path.extname(meta.name);
+          const base = meta.isDirectory ? meta.name : path.basename(meta.name, ext);
+          destPath = path.join(targetDir, `${base} (wiederhergestellt ${Date.now()})${ext}`);
+        }
       }
       await safeRename(storedPath, destPath);
       manifest.splice(idx, 1);
@@ -1077,6 +1123,127 @@ async function cleanupExpiredTrash(maxAgeDays = 30, configMediaPaths = []) {
   return { ok: true, removedCount };
 }
 
+function parseExifBuffer(buf) {
+  const exif = {};
+  if (!Buffer.isBuffer(buf) || buf.length < 12) return exif;
+
+  // PNG dimensions (IHDR)
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 && buf.length >= 24) {
+    exif.width = buf.readUInt32BE(16);
+    exif.height = buf.readUInt32BE(20);
+    return exif;
+  }
+
+  // JPEG
+  if (buf[0] !== 0xff || buf[1] !== 0xd8) return exif;
+  let offset = 2;
+  while (offset + 4 < buf.length) {
+    if (buf[offset] !== 0xff) break;
+    const marker = buf[offset + 1];
+    if (marker === 0xd9 || marker === 0xda) break;
+    if (marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7)) {
+      offset += 2;
+      continue;
+    }
+    const segLen = buf.readUInt16BE(offset + 2);
+    if (segLen < 2 || offset + 2 + segLen > buf.length) break;
+
+    // SOF0 / SOF2 for image dimensions
+    if ((marker === 0xc0 || marker === 0xc2) && segLen >= 7) {
+      exif.height = buf.readUInt16BE(offset + 5);
+      exif.width = buf.readUInt16BE(offset + 7);
+    }
+
+    // APP1 Exif
+    if (marker === 0xe1 && segLen > 14 && buf.toString('ascii', offset + 4, offset + 10) === 'Exif\0\0') {
+      const tiffStart = offset + 10;
+      const endian = buf.toString('ascii', tiffStart, tiffStart + 2);
+      const le = endian === 'II';
+      if (le || endian === 'MM') {
+        const read16 = (o) => (le ? buf.readUInt16LE(o) : buf.readUInt16BE(o));
+        const read32 = (o) => (le ? buf.readUInt32LE(o) : buf.readUInt32BE(o));
+        const readIfd = (ifdOffset) => {
+          const out = {};
+          if (ifdOffset < tiffStart || ifdOffset + 2 > buf.length) return out;
+          const count = read16(ifdOffset);
+          for (let i = 0; i < count; i += 1) {
+            const entry = ifdOffset + 2 + i * 12;
+            if (entry + 12 > buf.length) break;
+            const tag = read16(entry);
+            const type = read16(entry + 2);
+            const num = read32(entry + 4);
+            const typeSizes = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8 };
+            const totalBytes = (typeSizes[type] || 1) * num;
+            const valOffset = totalBytes <= 4 ? entry + 8 : tiffStart + read32(entry + 8);
+            if (valOffset < tiffStart || valOffset + totalBytes > buf.length) continue;
+            if (type === 2) {
+              out[tag] = buf.toString('utf8', valOffset, valOffset + num).replace(/\0+$/, '').trim();
+            } else if (type === 3 && num >= 1) {
+              out[tag] = read16(valOffset);
+            } else if (type === 4 && num >= 1) {
+              out[tag] = read32(valOffset);
+            } else if (type === 5 && num >= 1 && valOffset + 8 <= buf.length) {
+              const n = read32(valOffset);
+              const d = read32(valOffset + 4);
+              out[tag] = d ? n / d : n;
+            }
+          }
+          return out;
+        };
+
+        const firstIfd = tiffStart + read32(tiffStart + 4);
+        const ifd0 = readIfd(firstIfd);
+        if (ifd0[0x010f]) exif.make = ifd0[0x010f];
+        if (ifd0[0x0110]) exif.model = ifd0[0x0110];
+        if (ifd0[0x0131]) exif.software = ifd0[0x0131];
+        if (ifd0[0x0132]) exif.dateTime = ifd0[0x0132];
+        if (ifd0[0x8769]) {
+          const exifIfd = readIfd(tiffStart + ifd0[0x8769]);
+          if (exifIfd[0x9003]) exif.dateTimeOriginal = exifIfd[0x9003];
+          if (exifIfd[0x829a]) {
+            const exp = exifIfd[0x829a];
+            exif.exposureTime = exp >= 1 ? `${exp.toFixed(1)}s` : `1/${Math.round(1 / exp)}s`;
+          }
+          if (exifIfd[0x829d]) exif.fNumber = `f/${Number(exifIfd[0x829d]).toFixed(1)}`;
+          if (exifIfd[0x8827]) exif.iso = exifIfd[0x8827];
+          if (exifIfd[0x920a]) exif.focalLength = `${Math.round(exifIfd[0x920a])}mm`;
+          if (exifIfd[0xa002] && !exif.width) exif.width = exifIfd[0xa002];
+          if (exifIfd[0xa003] && !exif.height) exif.height = exifIfd[0xa003];
+        }
+      }
+    }
+    offset += 2 + segLen;
+  }
+  return exif;
+}
+
+async function readImageExif(requestedPath, configMediaPaths = []) {
+  const roots = getAllowedRoots(configMediaPaths);
+  const realFile = assertAllowedPath(requestedPath, roots);
+  const st = await statExisting(realFile);
+  if (!st.isFile()) {
+    const err = new Error('Keine Datei');
+    err.statusCode = 400;
+    throw err;
+  }
+  const fh = await fsp.open(realFile, 'r');
+  try {
+    const readLen = Math.min(st.size, 128 * 1024);
+    const buf = Buffer.alloc(readLen);
+    await fh.read(buf, 0, readLen, 0);
+    const exif = parseExifBuffer(buf);
+    return {
+      path: realFile,
+      name: path.basename(realFile),
+      sizeBytes: st.size,
+      modifiedAt: st.mtime.toISOString(),
+      exif
+    };
+  } finally {
+    await fh.close();
+  }
+}
+
 module.exports = {
   getAllowedRoots,
   assertAllowedPath,
@@ -1087,6 +1254,7 @@ module.exports = {
   streamLiveFile,
   streamVideoTranscode,
   streamThumbnail,
+  readImageExif,
   searchLiveFiles,
   cleanupExpiredTrash,
   createLiveFolder,

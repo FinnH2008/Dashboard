@@ -128,9 +128,59 @@ async function stopOrRemoveStack(stackName, action = 'down') {
   return { ok: true, output: `Aktion "${action}" für Stack "${clean}" ausgeführt.` };
 }
 
+function validateComposeYaml(yamlContent) {
+  const text = String(yamlContent || '');
+  if (!text.trim()) throw new Error('Compose-YAML darf nicht leer sein.');
+  if (!/^\s*services\s*:/m.test(text)) {
+    throw new Error('Ungültige docker-compose.yml (Abschnitt "services:" fehlt).');
+  }
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (/^\t+/.test(line)) {
+      throw new Error(`YAML-Fehler in Zeile ${i + 1}: Tabulatoren sind in YAML nicht erlaubt (Leerzeichen verwenden).`);
+    }
+  }
+  return true;
+}
+
+async function getStackYaml(stackName) {
+  ensureStacksDir();
+  const clean = sanitizeStackName(stackName);
+  const ymlPath = path.join(STACKS_DIR, clean, 'docker-compose.yml');
+  if (!fs.existsSync(ymlPath)) {
+    throw new Error(`Stack "${clean}" nicht gefunden.`);
+  }
+  const yaml = await fsp.readFile(ymlPath, 'utf8');
+  const st = await fsp.stat(ymlPath);
+  return {
+    name: clean,
+    yaml,
+    updatedAt: st.mtime.toISOString()
+  };
+}
+
+async function saveStackYaml(stackName, yamlContent) {
+  validateComposeYaml(yamlContent);
+  ensureStacksDir();
+  const clean = sanitizeStackName(stackName);
+  const stackDir = path.join(STACKS_DIR, clean);
+  await fsp.mkdir(stackDir, { recursive: true });
+  const ymlPath = path.join(stackDir, 'docker-compose.yml');
+  await fsp.writeFile(ymlPath, String(yamlContent), 'utf8');
+  return {
+    ok: true,
+    name: clean,
+    updatedAt: new Date().toISOString()
+  };
+}
+
 module.exports = {
   getComposeTemplates,
   listStacks,
   deployStack,
-  stopOrRemoveStack
+  stopOrRemoveStack,
+  validateComposeYaml,
+  getStackYaml,
+  saveStackYaml
 };

@@ -270,8 +270,18 @@ function querySmartInfo(blockDevices) {
     try {
       await Promise.all(
         physicalDisks.slice(0, 12).map(async (disk) => {
+          let powerState = null;
+          if (!disk.name.startsWith('nvme')) {
+            try {
+              const { stdout: hdOut } = await execFileAsync('hdparm', ['-C', disk.devPath], { timeout: 1500 });
+              if (/standby/i.test(hdOut)) powerState = 'standby';
+              else if (/active\/idle/i.test(hdOut)) powerState = 'active';
+            } catch {
+              // hdparm not installed or unsupported
+            }
+          }
           try {
-            const { stdout } = await execFileAsync('smartctl', ['-H', '-A', '-j', disk.devPath], { timeout: 2500 });
+            const { stdout } = await execFileAsync('smartctl', ['-n', 'standby', '-H', '-A', '-j', disk.devPath], { timeout: 2500 });
             const data = JSON.parse(stdout);
             const passed = data.smart_status?.passed;
             const temp = data.temperature?.current ?? null;
@@ -280,10 +290,19 @@ function querySmartInfo(blockDevices) {
               status: passed === true ? 'Gesund' : passed === false ? 'Warnung' : 'Unbekannt',
               healthy: passed !== false,
               temperatureCelsius: Number.isFinite(temp) ? temp : null,
-              powerOnHours: Number.isFinite(powerOnHours) ? powerOnHours : null
+              powerOnHours: Number.isFinite(powerOnHours) ? powerOnHours : null,
+              powerState
             };
           } catch {
-            // smartctl missing or needs CAP_SYS_RAWIO / privileged device access
+            if (powerState) {
+              results[disk.name] = {
+                status: powerState === 'standby' ? 'Standby' : 'Unbekannt',
+                healthy: true,
+                temperatureCelsius: null,
+                powerOnHours: null,
+                powerState
+              };
+            }
           }
         })
       );
@@ -471,7 +490,8 @@ async function collectStorageMetrics(customLabels = {}) {
       temperatureCelsius: smart?.temperatureCelsius ?? null,
       smartStatus: smart?.status ?? 'Aktiv',
       healthy: smart?.healthy ?? usedPercent < 95,
-      powerOnHours: smart?.powerOnHours ?? null
+      powerOnHours: smart?.powerOnHours ?? null,
+      powerState: smart?.powerState ?? null
     });
   }
 

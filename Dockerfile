@@ -10,7 +10,8 @@ RUN apk add --no-cache \
   zip \
   unzip \
   tar \
-  ffmpeg
+  ffmpeg \
+  hdparm
 
 WORKDIR /app
 

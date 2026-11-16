@@ -1,12 +1,18 @@
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { URL } = require('node:url');
 
 const {
   isAuthEnabled,
+  isTotpEnabled,
   isAuthenticated,
   verifyPassword,
+  verifyTotpForLogin,
+  setupTotp,
+  enableTotp,
+  disableTotp,
   getAuthMeta,
   setDashboardPassword,
   createSessionCookie,
@@ -39,13 +45,18 @@ const {
   recreateOrUpdateContainer,
   checkContainerUpdates,
   getDockerDiskUsage,
-  pruneDockerResources
+  pruneDockerResources,
+  loadAutoUpdateConfig,
+  saveAutoUpdateConfig,
+  runAutoUpdatePass
 } = require('./collectors/docker');
 const {
   getComposeTemplates,
   listStacks,
   deployStack,
-  stopOrRemoveStack
+  stopOrRemoveStack,
+  getStackYaml,
+  saveStackYaml
 } = require('./collectors/compose');
 const { getSmbStatus, applySmbShares } = require('./collectors/smb');
 const {
@@ -54,6 +65,7 @@ const {
   streamLiveFile,
   streamVideoTranscode,
   streamThumbnail,
+  readImageExif,
   searchLiveFiles,
   cleanupExpiredTrash,
   createLiveFolder,
@@ -75,6 +87,7 @@ const {
   testPortainerConnection,
   deployStackViaPortainer,
   controlPortainerStack,
+  getPortainerStackFile,
   invalidatePortainerCache
 } = require('./collectors/portainer');
 const { startStorageAnalysis, getAnalysisStatus } = require('./collectors/analyzer');
@@ -99,6 +112,7 @@ const {
   evaluateSystemNotifications
 } = require('./collectors/notifications');
 const { collectHostAndNetworkStatus, savePingTargets, loadHostCacheSnapshot } = require('./collectors/host');
+const { loadSslTargets, saveSslTargets, checkAllSslTargets } = require('./collectors/ssl');
 const { loadConfig, getPublicConfig, saveConfig } = require('./store/services');
 const { logAuditEvent, listAuditEvents } = require('./store/audit');
 const {
@@ -215,7 +229,7 @@ async function buildSnapshot(forceMediaScan = false) {
   ]);
 
   const [system, portainer] = await Promise.all([
-    Promise.resolve(collectSystemMetrics(config.serverName)),
+    Promise.resolve(collectSystemMetrics(config.serverName, config.power)),
     fetchPortainerStatus(config, docker.containers || [])
   ]);
 
@@ -384,6 +398,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/auth/status') {
       return sendJson(res, 200, {
         authEnabled: isAuthEnabled(),
+        totpEnabled: isTotpEnabled(),
         authenticated: isAuthenticated(req)
       });
     }
@@ -395,6 +410,16 @@ const server = http.createServer(async (req, res) => {
         recordLoginFailure(req);
         logAuditEvent(req, 'auth.fail', 'Fehlgeschlagener Anmeldeversuch (falsches Passwort).', 'warn');
         return sendJson(res, 401, { error: 'Falsches Passwort' });
+      }
+      if (isTotpEnabled()) {
+        if (!verifyTotpForLogin(body.totpCode)) {
+          recordLoginFailure(req);
+          logAuditEvent(req, 'auth.fail', 'Fehlgeschlagener Anmeldeversuch (ungültiger 2FA-Code).', 'warn');
+          return sendJson(res, 401, {
+            error: body.totpCode ? 'Ungültiger 2FA-Code' : '2FA-Code erforderlich',
+            totpRequired: true
+          });
+        }
       }
       clearLoginFailures(req);
       logAuditEvent(req, 'auth.login', 'Erfolgreich am Dashboard angemeldet.', 'ok');
@@ -488,6 +513,25 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, result, { 'Set-Cookie': createSessionCookie() });
     }
 
+    if (req.method === 'POST' && pathname === '/api/auth/totp/setup') {
+      const result = setupTotp('Homeserver OS', os.hostname() || 'admin');
+      return sendJson(res, 200, result);
+    }
+
+    if (req.method === 'POST' && pathname === '/api/auth/totp/enable') {
+      const body = await readJsonBody(req);
+      const result = enableTotp(body.code);
+      logAuditEvent(req, 'auth.totp.enable', '2FA (Authenticator-App) aktiviert.', 'ok');
+      return sendJson(res, 200, result);
+    }
+
+    if (req.method === 'POST' && pathname === '/api/auth/totp/disable') {
+      const body = await readJsonBody(req);
+      const result = disableTotp(body.currentPassword);
+      logAuditEvent(req, 'auth.totp.disable', '2FA (Authenticator-App) deaktiviert.', 'warn');
+      return sendJson(res, 200, result);
+    }
+
     if (req.method === 'GET' && pathname === '/api/audit') {
       const limit = Math.min(200, Math.max(10, Number(url.searchParams.get('limit')) || 100));
       return sendJson(res, 200, { events: listAuditEvents(limit) });
@@ -511,9 +555,9 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, result);
     }
 
-    // ==================== HOST PROCESSES, PORTS, VPN & PING ====================
+    // ==================== HOST PROCESSES, PORTS, VPN, SSL & PING ====================
     if (req.method === 'GET' && pathname === '/api/host/cache') {
-      return sendJson(res, 200, loadHostCacheSnapshot() || { collectedAt: null, processes: [], ports: [], vpn: { interfaces: [], containers: [] }, pingTargets: [] });
+      return sendJson(res, 200, loadHostCacheSnapshot() || { collectedAt: null, processes: [], ports: [], vpn: { interfaces: [], containers: [] }, security: null, sslTargets: [], pingTargets: [] });
     }
 
     if (req.method === 'GET' && pathname === '/api/host/status') {
@@ -528,6 +572,22 @@ const server = http.createServer(async (req, res) => {
       const docker = await collectDockerContainers();
       const status = await collectHostAndNetworkStatus(docker.containers || []);
       return sendJson(res, 200, status);
+    }
+
+    if (req.method === 'GET' && pathname === '/api/host/ssl-targets') {
+      return sendJson(res, 200, { targets: loadSslTargets() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/host/ssl-targets') {
+      const body = await readJsonBody(req);
+      saveSslTargets(body.targets || []);
+      const targets = await checkAllSslTargets();
+      return sendJson(res, 200, { targets });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/host/ssl-check') {
+      const targets = await checkAllSslTargets();
+      return sendJson(res, 200, { targets });
     }
 
     // ==================== TELEMETRY & SNAPSHOT ====================
@@ -639,6 +699,12 @@ const server = http.createServer(async (req, res) => {
       return await streamThumbnail(req, res, targetPath, cfg.mediaPaths);
     }
 
+    if (req.method === 'GET' && pathname === '/api/files/exif') {
+      const targetPath = url.searchParams.get('path') || '';
+      const cfg = loadConfig();
+      return sendJson(res, 200, await readImageExif(targetPath, cfg.mediaPaths));
+    }
+
     if (req.method === 'GET' && pathname === '/api/files/video') {
       const targetPath = url.searchParams.get('path') || '';
       const startSec = Number(url.searchParams.get('start')) || 0;
@@ -674,7 +740,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/files/trash/restore') {
       const body = await readJsonBody(req);
       const cfg = loadConfig();
-      return sendJson(res, 200, await restoreFromTrash(body.trashKeys || body.items || body.keys || [], cfg.mediaPaths));
+      const result = await restoreFromTrash(
+        body.trashKeys || body.items || body.keys || [],
+        cfg.mediaPaths,
+        body.conflictMode || 'check'
+      );
+      if (result && result.conflict) {
+        return sendJson(res, 409, result);
+      }
+      return sendJson(res, 200, result);
     }
 
     if (req.method === 'POST' && pathname === '/api/files/trash/delete') {
@@ -874,6 +948,13 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, result);
     }
 
+    const portainerStackYamlMatch = pathname.match(/^\/api\/portainer\/stacks\/([^/]+)\/yaml$/);
+    if (req.method === 'GET' && portainerStackYamlMatch) {
+      const stackId = safeDecodeParam(portainerStackYamlMatch[1]);
+      const cfg = loadConfig();
+      return sendJson(res, 200, await getPortainerStackFile(stackId, cfg));
+    }
+
     const portainerStackMatch = pathname.match(/^\/api\/portainer\/stacks\/([^/]+)\/(start|stop|delete)$/);
     if (req.method === 'POST' && portainerStackMatch) {
       const stackId = safeDecodeParam(portainerStackMatch[1]);
@@ -888,6 +969,25 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && pathname === '/api/compose/stacks') {
       return sendJson(res, 200, { stacks: await listStacks() });
+    }
+
+    const composeYamlMatch = pathname.match(/^\/api\/compose\/([^/]+)\/yaml$/);
+    if (req.method === 'GET' && composeYamlMatch) {
+      const stackName = safeDecodeParam(composeYamlMatch[1]);
+      return sendJson(res, 200, await getStackYaml(stackName));
+    }
+
+    if (req.method === 'POST' && pathname === '/api/compose/save') {
+      const body = await readJsonBody(req);
+      const cfg = loadConfig();
+      if (body.target === 'portainer' && cfg.portainerUrl && cfg.portainerApiKey) {
+        const resPortainer = await deployStackViaPortainer(body.name, body.yaml, cfg);
+        logAuditEvent(req, 'compose.save', `Portainer Stack "${body.name}" aktualisiert.`, 'info');
+        return sendJson(res, 200, resPortainer);
+      }
+      const resLocal = await saveStackYaml(body.name, body.yaml, body.redeploy !== false);
+      logAuditEvent(req, 'compose.save', `Compose Stack "${body.name}" gespeichert.`, 'info');
+      return sendJson(res, 200, resLocal);
     }
 
     if (req.method === 'POST' && pathname === '/api/compose/deploy') {
@@ -932,6 +1032,23 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ==================== DOCKER MAINTENANCE & CONTAINER ACTIONS ====================
+    if (req.method === 'GET' && pathname === '/api/docker/autoupdate') {
+      return sendJson(res, 200, loadAutoUpdateConfig());
+    }
+
+    if (req.method === 'POST' && pathname === '/api/docker/autoupdate') {
+      const body = await readJsonBody(req);
+      const saved = saveAutoUpdateConfig(body);
+      logAuditEvent(req, 'docker.autoupdate.config', `Auto-Update Zeitplan ${saved.enabled ? 'aktiviert' : 'deaktiviert'} (${saved.timeHHMM}).`, 'info');
+      return sendJson(res, 200, saved);
+    }
+
+    if (req.method === 'POST' && pathname === '/api/docker/autoupdate/run') {
+      const result = await runAutoUpdatePass({ forceAllAuto: false });
+      logAuditEvent(req, 'docker.autoupdate.run', `Auto-Update Lauf: ${result.updated?.length || 0} aktualisiert, ${result.notified?.length || 0} Updates gefunden.`, 'info');
+      return sendJson(res, 200, result);
+    }
+
     if (req.method === 'POST' && pathname === '/api/docker/check-updates') {
       const result = await checkContainerUpdates();
       return sendJson(res, 200, result);
