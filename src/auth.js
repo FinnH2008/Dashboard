@@ -35,9 +35,25 @@ const loginAttempts = new Map();
 const MAX_ATTEMPTS_WINDOW_MS = 60_000;
 const MAX_ATTEMPTS_PER_WINDOW = 10;
 
+function isTrustedProxyAddress(addr) {
+  if (String(process.env.TRUST_PROXY || '').toLowerCase() === 'true') return true;
+  const ip = String(addr || '').replace(/^::ffff:/, '');
+  return (
+    ip === '127.0.0.1' ||
+    ip === '::1' ||
+    ip.startsWith('10.') ||
+    ip.startsWith('192.168.') ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)
+  );
+}
+
 function getClientKey(req) {
-  const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return fwd || req.socket?.remoteAddress || 'unknown';
+  const remote = req.socket?.remoteAddress || 'unknown';
+  if (isTrustedProxyAddress(remote)) {
+    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (fwd) return fwd;
+  }
+  return remote;
 }
 
 function checkLoginRateLimit(req) {
@@ -197,19 +213,24 @@ function generateTotpCode(secretBase32, counter = Math.floor(Date.now() / 1000 /
   return String(binary % 1_000_000).padStart(6, '0');
 }
 
-function verifyTotpCode(secretBase32, candidate, windowSteps = 1) {
+function findMatchingTotpStep(secretBase32, candidate, windowSteps = 1) {
   const code = String(candidate || '').replace(/\s+/g, '');
-  if (!/^\d{6}$/.test(code)) return false;
+  if (!/^\d{6}$/.test(code)) return null;
   const step = Math.floor(Date.now() / 1000 / 30);
   const candBuf = Buffer.from(code, 'utf8');
   for (let delta = -windowSteps; delta <= windowSteps; delta += 1) {
-    const expected = generateTotpCode(secretBase32, step + delta);
+    const candidateStep = step + delta;
+    const expected = generateTotpCode(secretBase32, candidateStep);
     const expBuf = Buffer.from(expected, 'utf8');
     if (candBuf.length === expBuf.length && crypto.timingSafeEqual(candBuf, expBuf)) {
-      return true;
+      return candidateStep;
     }
   }
-  return false;
+  return null;
+}
+
+function verifyTotpCode(secretBase32, candidate, windowSteps = 1) {
+  return findMatchingTotpStep(secretBase32, candidate, windowSteps) !== null;
 }
 
 function setupTotp(issuer = 'Homeserver OS', account = 'admin') {
@@ -284,7 +305,15 @@ function verifyTotpForLogin(candidate) {
   if (!fileCfg?.totp?.enabled || !fileCfg?.totp?.secret) return true;
   const raw = String(candidate || '').trim().toUpperCase();
   if (!raw) return false;
-  if (verifyTotpCode(fileCfg.totp.secret, raw)) return true;
+  const matchedStep = findMatchingTotpStep(fileCfg.totp.secret, raw);
+  if (matchedStep !== null) {
+    if (typeof fileCfg.totp.lastAcceptedStep === 'number' && matchedStep <= fileCfg.totp.lastAcceptedStep) {
+      return false;
+    }
+    fileCfg.totp.lastAcceptedStep = matchedStep;
+    writeAuthFile(fileCfg);
+    return true;
+  }
 
   const hashes = Array.isArray(fileCfg.totp.backupHashes) ? fileCfg.totp.backupHashes : [];
   for (let i = 0; i < hashes.length; i += 1) {
@@ -417,16 +446,25 @@ function isAuthenticated(req) {
   return Boolean(verifyToken(cookies[COOKIE_NAME]));
 }
 
-function createSessionCookie() {
+function isSecureRequest(req) {
+  if (!req) return false;
+  if (req.socket?.encrypted) return true;
+  const proto = String(req.headers?.['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  return proto === 'https';
+}
+
+function createSessionCookie(req) {
   const token = signToken({
     iat: Date.now(),
     exp: Date.now() + 7 * 24 * 60 * 60 * 1000
   });
-  return `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`;
+  const secure = isSecureRequest(req) ? '; Secure' : '';
+  return `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800${secure}`;
 }
 
-function clearSessionCookie() {
-  return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+function clearSessionCookie(req) {
+  const secure = isSecureRequest(req) ? '; Secure' : '';
+  return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
 }
 
 module.exports = {

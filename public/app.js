@@ -1024,6 +1024,7 @@
     renderTopbar(data);
     renderAlertsBadge(data);
     renderKpis(data);
+    renderHealthScore(data);
     drawTelemetryChart();
     renderMediaOverview(data);
     renderDisksGrid('overview-disks-grid', data.storage);
@@ -6136,6 +6137,274 @@
     });
 
     window.addEventListener('resize', drawTelemetryChart);
+
+    document.getElementById('btn-quick-speedtest')?.addEventListener('click', () => {
+      switchView('host');
+      activateSubTab('host', 'network');
+      requestAnimationFrame(() => {
+        document.getElementById('host-speedtest-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+
+    document.getElementById('health-score-pills')?.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-health-goto]');
+      if (!btn) return;
+      const view = btn.dataset.healthGoto;
+      if (view) switchView(view);
+      if (btn.dataset.healthSubtab) {
+        activateSubTab(view, btn.dataset.healthSubtab);
+      }
+    });
+
+    document.getElementById('btn-speedtest-run')?.addEventListener('click', runLanSpeedtest);
+    renderSpeedtestHistory();
+  }
+
+  // ==================== ANIMATED HEALTH SCORE & LAN SPEEDTEST ====================
+  function renderHealthScore(data) {
+    const card = document.getElementById('overview-health-card');
+    if (!card || !data?.system) return;
+
+    let score = 100;
+    const pills = [];
+    const sys = data.system;
+    const cpuPct = Number(sys.cpu?.usagePercent ?? 0);
+    const cpuTemp = sys.temperatures?.cpuCelsius;
+    const ramPct = Number(sys.memory?.usedPercent ?? 0);
+    const disks = Array.isArray(data.storage?.disks) ? data.storage.disks : [];
+    const containers = Array.isArray(data.docker?.containers) ? data.docker.containers : [];
+
+    if (cpuPct >= 90) {
+      score -= 18;
+      pills.push({ label: `CPU hoch (${cpuPct.toFixed(0)}%)`, level: 'crit', goto: 'host', subtab: 'live' });
+    } else if (cpuPct >= 75) {
+      score -= 8;
+      pills.push({ label: `CPU ${cpuPct.toFixed(0)}%`, level: 'warn', goto: 'host', subtab: 'live' });
+    } else {
+      pills.push({ label: `CPU ${cpuPct.toFixed(0)}%`, level: 'ok', goto: 'host', subtab: 'live' });
+    }
+
+    if (typeof cpuTemp === 'number' && Number.isFinite(cpuTemp)) {
+      if (cpuTemp >= 85) {
+        score -= 20;
+        pills.push({ label: `Temp ${cpuTemp.toFixed(0)} °C`, level: 'crit', goto: 'host', subtab: 'live' });
+      } else if (cpuTemp >= 72) {
+        score -= 8;
+        pills.push({ label: `Temp ${cpuTemp.toFixed(0)} °C`, level: 'warn', goto: 'host', subtab: 'live' });
+      }
+    }
+
+    if (ramPct >= 92) {
+      score -= 18;
+      pills.push({ label: `RAM kritisch (${ramPct.toFixed(0)}%)`, level: 'crit', goto: 'host', subtab: 'live' });
+    } else if (ramPct >= 80) {
+      score -= 8;
+      pills.push({ label: `RAM ${ramPct.toFixed(0)}%`, level: 'warn', goto: 'host', subtab: 'live' });
+    } else {
+      pills.push({ label: `RAM ${ramPct.toFixed(0)}%`, level: 'ok', goto: 'host', subtab: 'live' });
+    }
+
+    const smartFails = disks.filter((d) => d.smartHealth && /fail|bad|crit/i.test(String(d.smartHealth))).length;
+    const maxDiskPct = disks.reduce((m, d) => Math.max(m, Number(d.usedPercent ?? 0)), 0);
+    if (smartFails > 0) {
+      score -= 30;
+      pills.push({ label: `${smartFails} SMART-Fehler`, level: 'crit', goto: 'storage' });
+    } else if (maxDiskPct >= 92) {
+      score -= 15;
+      pills.push({ label: `Speicher voll (${maxDiskPct.toFixed(0)}%)`, level: 'crit', goto: 'storage' });
+    } else if (maxDiskPct >= 82) {
+      score -= 6;
+      pills.push({ label: `Speicher ${maxDiskPct.toFixed(0)}%`, level: 'warn', goto: 'storage' });
+    } else {
+      pills.push({ label: `Speicher OK`, level: 'ok', goto: 'storage' });
+    }
+
+    const unhealthy = containers.filter((c) => c.health === 'unhealthy' || c.oomKilled).length;
+    const running = containers.filter((c) => c.state === 'running').length;
+    if (unhealthy > 0) {
+      score -= Math.min(25, unhealthy * 12);
+      pills.push({ label: `${unhealthy} Container auffällig`, level: 'crit', goto: 'docker', subtab: 'oom' });
+    } else if (containers.length > 0) {
+      pills.push({ label: `${running}/${containers.length} Container aktiv`, level: 'ok', goto: 'docker', subtab: 'containers' });
+    }
+
+    score = Math.max(0, Math.min(100, Math.round(score)));
+    const level = score >= 85 ? 'ok' : score >= 60 ? 'warn' : 'crit';
+    card.classList.remove('health-ok', 'health-warn', 'health-crit');
+    card.classList.add(`health-${level}`);
+
+    const ring = document.getElementById('health-ring-progress');
+    if (ring) {
+      const circumference = 226.2;
+      ring.style.strokeDashoffset = String((circumference * (1 - score / 100)).toFixed(2));
+    }
+    const valEl = document.getElementById('health-score-val');
+    if (valEl) valEl.textContent = String(score);
+
+    const titleEl = document.getElementById('health-score-title');
+    const badgeEl = document.getElementById('health-score-badge');
+    if (titleEl) {
+      titleEl.textContent =
+        level === 'ok'
+          ? 'Homeserver läuft optimal'
+          : level === 'warn'
+            ? 'Erhöhte Auslastung erkannt'
+            : 'Handlungsbedarf beim Homeserver';
+    }
+    if (badgeEl) {
+      badgeEl.textContent = level === 'ok' ? 'Optimal' : level === 'warn' ? 'Achtung' : 'Kritisch';
+    }
+
+    const pillsEl = document.getElementById('health-score-pills');
+    if (pillsEl) {
+      pillsEl.innerHTML = pills
+        .map(
+          (p) =>
+            `<button type="button" class="health-pill pill-${p.level}" data-health-goto="${escapeHtml(p.goto)}"${
+              p.subtab ? ` data-health-subtab="${escapeHtml(p.subtab)}"` : ''
+            }>${escapeHtml(p.label)}</button>`
+        )
+        .join('');
+    }
+  }
+
+  function setSpeedtestGauge(mbps, maxMbps = 1000) {
+    const arc = document.getElementById('speedtest-arc-fill');
+    const valEl = document.getElementById('speedtest-live-mbps');
+    const safeMbps = Math.max(0, Number(mbps) || 0);
+    if (valEl) {
+      valEl.textContent = safeMbps >= 100 ? Math.round(safeMbps).toString() : safeMbps.toFixed(1);
+    }
+    if (arc) {
+      const arcLen = 270.2;
+      const ratio = Math.min(1, Math.log10(1 + (safeMbps / maxMbps) * 9));
+      arc.style.strokeDashoffset = String((arcLen * (1 - ratio)).toFixed(2));
+    }
+  }
+
+  function renderSpeedtestHistory() {
+    const box = document.getElementById('speedtest-history');
+    if (!box) return;
+    let items = [];
+    try {
+      items = JSON.parse(localStorage.getItem('hs_speedtest_history') || '[]');
+    } catch {
+      items = [];
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      box.innerHTML = '';
+      return;
+    }
+    box.innerHTML = items
+      .slice(0, 4)
+      .map(
+        (it) =>
+          `<span class="io-pill mono">${escapeHtml(it.time)} · ↓ ${Number(it.dlMbps).toFixed(0)} / ↑ ${Number(it.ulMbps).toFixed(0)} Mbit/s · ${Number(it.pingMs).toFixed(1)} ms</span>`
+      )
+      .join('');
+  }
+
+  let speedtestRunning = false;
+  async function runLanSpeedtest() {
+    if (speedtestRunning) return;
+    speedtestRunning = true;
+    const btn = document.getElementById('btn-speedtest-run');
+    const statusEl = document.getElementById('speedtest-status');
+    const phaseEl = document.getElementById('speedtest-phase');
+    const sizeMb = Math.min(32, Math.max(8, Number(document.getElementById('speedtest-size')?.value) || 16));
+
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Messung läuft…';
+    }
+
+    try {
+      // Phase 1: Ping & Jitter
+      if (phaseEl) phaseEl.textContent = 'Ping';
+      if (statusEl) statusEl.textContent = 'Messe Latenz & Jitter zum NAS…';
+      setSpeedtestGauge(0);
+
+      const rtts = [];
+      for (let i = 0; i < 5; i += 1) {
+        const t0 = performance.now();
+        await fetch(`/api/net/ping?_=${Date.now()}_${i}`, { cache: 'no-store' });
+        rtts.push(performance.now() - t0);
+      }
+      const avgPing = rtts.reduce((a, b) => a + b, 0) / rtts.length;
+      const jitter = rtts.reduce((a, b) => a + Math.abs(b - avgPing), 0) / rtts.length;
+      const pingEl = document.getElementById('speedtest-ping-val');
+      const jitterEl = document.getElementById('speedtest-jitter-val');
+      if (pingEl) pingEl.textContent = `${avgPing.toFixed(1)} ms`;
+      if (jitterEl) jitterEl.textContent = `Jitter: ${jitter.toFixed(1)} ms`;
+
+      // Phase 2: Download (streaming)
+      if (phaseEl) phaseEl.textContent = 'Download';
+      if (statusEl) statusEl.textContent = `Lade ${sizeMb} MB vom NAS…`;
+      const dlStart = performance.now();
+      const dlRes = await fetch(`/api/net/download?mb=${sizeMb}&_=${Date.now()}`, { cache: 'no-store' });
+      let dlBytes = 0;
+      if (dlRes.body && dlRes.body.getReader) {
+        const reader = dlRes.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          dlBytes += value.byteLength;
+          const sec = Math.max(0.02, (performance.now() - dlStart) / 1000);
+          setSpeedtestGauge((dlBytes * 8) / sec / 1e6);
+        }
+      } else {
+        const buf = await dlRes.arrayBuffer();
+        dlBytes = buf.byteLength;
+      }
+      const dlSec = Math.max(0.01, (performance.now() - dlStart) / 1000);
+      const dlMbps = (dlBytes * 8) / dlSec / 1e6;
+      const dlMBs = dlBytes / dlSec / (1024 * 1024);
+      setSpeedtestGauge(dlMbps);
+      document.getElementById('speedtest-dl-val').textContent = `${dlMbps.toFixed(1)} Mbit/s`;
+      document.getElementById('speedtest-dl-mbs').textContent = `${dlMBs.toFixed(1)} MB/s`;
+
+      // Phase 3: Upload
+      if (phaseEl) phaseEl.textContent = 'Upload';
+      if (statusEl) statusEl.textContent = `Sende ${sizeMb} MB zum NAS…`;
+      const payload = new Uint8Array(sizeMb * 1024 * 1024);
+      const ulStart = performance.now();
+      await fetch('/api/net/upload', { method: 'POST', body: payload, cache: 'no-store' });
+      const ulSec = Math.max(0.01, (performance.now() - ulStart) / 1000);
+      const ulMbps = (payload.byteLength * 8) / ulSec / 1e6;
+      const ulMBs = payload.byteLength / ulSec / (1024 * 1024);
+      setSpeedtestGauge(ulMbps);
+      document.getElementById('speedtest-ul-val').textContent = `${ulMbps.toFixed(1)} Mbit/s`;
+      document.getElementById('speedtest-ul-mbs').textContent = `${ulMBs.toFixed(1)} MB/s`;
+
+      if (phaseEl) phaseEl.textContent = 'Fertig';
+      if (statusEl) {
+        statusEl.textContent = `Abgeschlossen (${sizeMb} MB) · ↓ ${dlMbps.toFixed(0)} Mbit/s · ↑ ${ulMbps.toFixed(0)} Mbit/s · Ping ${avgPing.toFixed(1)} ms`;
+      }
+
+      try {
+        const prev = JSON.parse(localStorage.getItem('hs_speedtest_history') || '[]');
+        const next = [
+          {
+            time: new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }),
+            dlMbps,
+            ulMbps,
+            pingMs: avgPing
+          },
+          ...(Array.isArray(prev) ? prev : [])
+        ].slice(0, 6);
+        localStorage.setItem('hs_speedtest_history', JSON.stringify(next));
+      } catch {}
+      renderSpeedtestHistory();
+    } catch (err) {
+      if (phaseEl) phaseEl.textContent = 'Fehler';
+      if (statusEl) statusEl.textContent = `Speedtest fehlgeschlagen: ${err.message}`;
+    } finally {
+      speedtestRunning = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Speedtest starten';
+      }
+    }
   }
 
   // ==================== BOOT ====================

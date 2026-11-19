@@ -770,6 +770,65 @@ async function saveLiveUpload(targetDir, rawFilename, buffer, configMediaPaths =
   return { ok: true, path: destPath, sizeBytes: buffer.length };
 }
 
+async function saveLiveUploadStream(targetDir, rawFilename, readableStream, configMediaPaths = [], maxBytes = 2 * 1024 * 1024 * 1024) {
+  if (!ALLOW_WRITE) {
+    const err = new Error('Schreibzugriff ist deaktiviert.');
+    err.statusCode = 403;
+    throw err;
+  }
+  const cleanName = path.basename(String(rawFilename || 'upload.bin').trim());
+  if (!cleanName || cleanName === '.' || cleanName === '..') {
+    const err = new Error('Ungültiger Dateiname');
+    err.statusCode = 400;
+    throw err;
+  }
+  const roots = getAllowedRoots(configMediaPaths);
+  const realDir = assertAllowedPath(targetDir, roots);
+  await statExisting(realDir);
+
+  const destPath = path.join(realDir, cleanName);
+  const tempPath = path.join(realDir, `.hs-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`);
+
+  let totalBytes = 0;
+  await new Promise((resolve, reject) => {
+    const ws = fs.createWriteStream(tempPath, { flags: 'wx' });
+    let settled = false;
+
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      readableStream.unpipe(ws);
+      ws.destroy();
+      fsp.unlink(tempPath).catch(() => {});
+      reject(err);
+    };
+
+    readableStream.on('data', (chunk) => {
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        const err = new Error(`Upload überschreitet das Limit (${Math.round(maxBytes / (1024 * 1024))} MB).`);
+        err.statusCode = 413;
+        readableStream.pause();
+        fail(err);
+      }
+    });
+    readableStream.on('error', fail);
+    readableStream.on('aborted', () => fail(new Error('Upload wurde abgebrochen.')));
+    ws.on('error', fail);
+    ws.on('finish', () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    });
+
+    readableStream.pipe(ws);
+  });
+
+  await fsp.rename(tempPath, destPath);
+  return { ok: true, path: destPath, sizeBytes: totalBytes };
+}
+
 async function readLiveTextFile(targetPath, configMediaPaths = []) {
   const roots = getAllowedRoots(configMediaPaths);
   const realFile = assertAllowedPath(targetPath, roots);
@@ -1266,6 +1325,7 @@ module.exports = {
   deleteTrashItems,
   emptyTrash,
   saveLiveUpload,
+  saveLiveUploadStream,
   readLiveTextFile,
   writeLiveTextFile,
   streamZipDownload,

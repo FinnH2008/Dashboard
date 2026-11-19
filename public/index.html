@@ -13,7 +13,7 @@
   <link rel="apple-touch-icon" href="/icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-  <link rel="stylesheet" href="/styles.css?v=5" />
+  <link rel="stylesheet" href="/styles.css?v=6" />
 </head>
 <body>
   <!-- Optional Auth Gate Overlay -->
@@ -196,6 +196,32 @@
             </div>
           </div>
           <div class="widget-config-list" id="overview-widget-config-list"></div>
+        </article>
+
+        <!-- Animated Server Health Score & Live Diagnosis -->
+        <article class="card health-score-card" id="overview-health-card">
+          <div class="health-ring-wrap" aria-hidden="true">
+            <svg class="health-ring-svg" viewBox="0 0 88 88">
+              <circle class="health-ring-bg" cx="44" cy="44" r="36"></circle>
+              <circle class="health-ring-progress" id="health-ring-progress" cx="44" cy="44" r="36"></circle>
+            </svg>
+            <div class="health-ring-center">
+              <span class="health-ring-value mono" id="health-score-val">—</span>
+              <span class="health-ring-unit">Score</span>
+            </div>
+          </div>
+          <div class="health-score-body">
+            <div class="health-score-top">
+              <span class="health-pulse-dot" id="health-pulse-dot"></span>
+              <h3 class="health-score-title" id="health-score-title">System-Diagnose wird geladen…</h3>
+              <span class="tag mono" id="health-score-badge">Prüfe…</span>
+            </div>
+            <p class="panel-subtitle" id="health-score-summary">Echtzeit-Bewertung aus CPU, RAM, Festplatten (SMART), Temperaturen &amp; Docker-Status</p>
+            <div class="health-pills" id="health-score-pills"></div>
+          </div>
+          <div class="health-score-actions">
+            <button type="button" class="btn-secondary btn-sm" id="btn-quick-speedtest" data-goto="host">LAN-Speedtest</button>
+          </div>
         </article>
 
         <!-- Ordered Widget Container -->
@@ -788,6 +814,58 @@
               </table>
             </div>
           </article>
+
+        <!-- Animated LAN Speedtest (Browser <-> NAS) -->
+        <article class="card panel-card subtab-panel" data-subtab-group="host" data-subtab-panel="network" id="host-speedtest-card">
+          <div class="panel-header">
+            <div>
+              <h2>LAN-Speedtest (Browser &harr; NAS)</h2>
+              <p class="panel-subtitle" id="speedtest-status">Misst echte lokale Download-, Upload- und Ping-Werte direkt zu diesem Homeserver</p>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <select id="speedtest-size" class="input-sm mono" aria-label="Testgröße">
+                <option value="8">8 MB</option>
+                <option value="16" selected>16 MB</option>
+                <option value="32">32 MB</option>
+              </select>
+              <button type="button" class="btn-primary btn-sm" id="btn-speedtest-run">Speedtest starten</button>
+            </div>
+          </div>
+
+          <div class="speedtest-layout">
+            <div class="speedtest-gauge-box">
+              <svg class="speedtest-gauge-svg" viewBox="0 0 220 132" aria-hidden="true">
+                <path class="speedtest-arc-bg" d="M 24 114 A 86 86 0 0 1 196 114"></path>
+                <path class="speedtest-arc-fill" id="speedtest-arc-fill" d="M 24 114 A 86 86 0 0 1 196 114"></path>
+              </svg>
+              <div class="speedtest-gauge-readout">
+                <div class="speedtest-phase" id="speedtest-phase">Bereit</div>
+                <div class="speedtest-mbps mono" id="speedtest-live-mbps">0</div>
+                <div class="speedtest-unit mono" id="speedtest-live-unit">Mbit/s</div>
+              </div>
+            </div>
+
+            <div class="speedtest-metrics-grid">
+              <div class="speedtest-metric">
+                <span class="speedtest-metric-label">↓ Download</span>
+                <strong class="speedtest-metric-val mono" id="speedtest-dl-val">—</strong>
+                <span class="muted-text mono" id="speedtest-dl-mbs" style="font-size:11px;">— MB/s</span>
+              </div>
+              <div class="speedtest-metric">
+                <span class="speedtest-metric-label">↑ Upload</span>
+                <strong class="speedtest-metric-val mono" id="speedtest-ul-val">—</strong>
+                <span class="muted-text mono" id="speedtest-ul-mbs" style="font-size:11px;">— MB/s</span>
+              </div>
+              <div class="speedtest-metric">
+                <span class="speedtest-metric-label">Ping / Jitter</span>
+                <strong class="speedtest-metric-val mono" id="speedtest-ping-val">—</strong>
+                <span class="muted-text mono" id="speedtest-jitter-val" style="font-size:11px;">Jitter: —</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="speedtest-history" id="speedtest-history"></div>
+        </article>
       </section>
 
       <!-- ==================== VIEW: DOCKER CONTAINERS ==================== -->
@@ -2151,7 +2229,7 @@
     </button>
   </nav>
 
-  <script src="/qr.js?v=5"></script>
-  <script src="/app.js?v=5"></script>
+  <script src="/qr.js?v=6"></script>
+  <script src="/app.js?v=6"></script>
 </body>
 </html>

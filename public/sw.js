@@ -1,10 +1,10 @@
-const CACHE_NAME = 'homeserver-shell-v5';
+const CACHE_NAME = 'homeserver-shell-v6';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
-  '/styles.css?v=5',
-  '/qr.js?v=5',
-  '/app.js?v=5',
+  '/styles.css?v=6',
+  '/qr.js?v=6',
+  '/app.js?v=6',
   '/manifest.webmanifest',
   '/icon.svg',
   '/icon-192.png',

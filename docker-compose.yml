@@ -48,6 +48,9 @@ services:
       # Optional weitere Pfade außerhalb von /mnt (z. B. /media oder /srv/daten):
       # - /media:/media:rslave
 
+      # Optional für SSH- & Fail2ban-Monitor (liest /host/var/log/auth.log & fail2ban.log):
+      # - /var/log:/host/var/log:ro
+
     # Optional für SMART-Temperaturen, Festplatten-Mount/Format & Host-Reboot:
     # privileged: true
     # pid: host

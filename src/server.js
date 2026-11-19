@@ -77,6 +77,7 @@ const {
   deleteTrashItems,
   emptyTrash,
   saveLiveUpload,
+  saveLiveUploadStream,
   readLiveTextFile,
   writeLiveTextFile,
   streamZipDownload,
@@ -158,7 +159,8 @@ function loadAppCatalog() {
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'SAMEORIGIN',
-  'Referrer-Policy': 'same-origin'
+  'Referrer-Policy': 'same-origin',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws: wss:; frame-ancestors 'self'"
 };
 
 function sendJson(res, statusCode, payload, extraHeaders = {}) {
@@ -380,6 +382,87 @@ try {
 }
 
 const activeSseResponses = new Set();
+let sseBroadcastTimer = null;
+let sseKeepaliveTimer = null;
+let sseInFlight = false;
+let lastBroadcastPayload = null;
+let lastBroadcastAt = 0;
+
+function stopSseBroadcaster() {
+  if (sseBroadcastTimer) {
+    clearTimeout(sseBroadcastTimer);
+    sseBroadcastTimer = null;
+  }
+  if (sseKeepaliveTimer) {
+    clearInterval(sseKeepaliveTimer);
+    sseKeepaliveTimer = null;
+  }
+}
+
+function broadcastSseFrame(frame) {
+  for (const clientRes of activeSseResponses) {
+    if (clientRes.destroyed || clientRes.writableEnded) {
+      activeSseResponses.delete(clientRes);
+      continue;
+    }
+    try {
+      clientRes.write(frame);
+    } catch {
+      activeSseResponses.delete(clientRes);
+    }
+  }
+  if (activeSseResponses.size === 0) {
+    stopSseBroadcaster();
+  }
+}
+
+async function runSseBroadcastTick() {
+  if (activeSseResponses.size === 0) {
+    stopSseBroadcaster();
+    return;
+  }
+  if (sseInFlight) return;
+  sseInFlight = true;
+  try {
+    const snapshot = await buildSnapshot(false);
+    const payload = `data: ${JSON.stringify(snapshot)}\n\n`;
+    lastBroadcastPayload = payload;
+    lastBroadcastAt = Date.now();
+    broadcastSseFrame(payload);
+  } catch (err) {
+    broadcastSseFrame(`event: error\ndata: ${JSON.stringify({ message: err.message })}\n\n`);
+  } finally {
+    sseInFlight = false;
+    if (activeSseResponses.size > 0) {
+      sseBroadcastTimer = setTimeout(runSseBroadcastTick, 1000);
+    }
+  }
+}
+
+function ensureSseBroadcaster() {
+  if (!sseKeepaliveTimer) {
+    sseKeepaliveTimer = setInterval(() => {
+      broadcastSseFrame(': keepalive\n\n');
+    }, 15000);
+  }
+  if (!sseBroadcastTimer && !sseInFlight) {
+    runSseBroadcastTick();
+  }
+}
+
+function getTrashRetentionDays() {
+  try {
+    const auto = getAutomationState();
+    const sched = (auto?.schedules || []).find((s) => s.type === 'trash-cleanup' && s.enabled !== false);
+    const parsed = Number(sched?.target);
+    if (Number.isFinite(parsed) && parsed >= 1) return Math.round(parsed);
+  } catch {
+    // fallback to default 30 days
+  }
+  return 30;
+}
+
+const SPEEDTEST_CHUNK = Buffer.alloc(64 * 1024, 0x5a);
 
 const server = http.createServer(async (req, res) => {
   let url;
@@ -423,11 +506,11 @@ const server = http.createServer(async (req, res) => {
       }
       clearLoginFailures(req);
       logAuditEvent(req, 'auth.login', 'Erfolgreich am Dashboard angemeldet.', 'ok');
-      return sendJson(res, 200, { ok: true }, { 'Set-Cookie': createSessionCookie() });
+      return sendJson(res, 200, { ok: true }, { 'Set-Cookie': createSessionCookie(req) });
     }
 
     if (req.method === 'POST' && pathname === '/api/auth/logout') {
-      return sendJson(res, 200, { ok: true }, { 'Set-Cookie': clearSessionCookie() });
+      return sendJson(res, 200, { ok: true }, { 'Set-Cookie': clearSessionCookie(req) });
     }
 
     // ==================== PUBLIC SHARE LINKS (/s/:token) ====================
@@ -510,7 +593,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const result = setDashboardPassword(body.currentPassword, body.newPassword);
       logAuditEvent(req, 'auth.password', result.message || 'Dashboard-Passwort geändert.', 'ok');
-      return sendJson(res, 200, result, { 'Set-Cookie': createSessionCookie() });
+      return sendJson(res, 200, result, { 'Set-Cookie': createSessionCookie(req) });
     }
 
     if (req.method === 'POST' && pathname === '/api/auth/totp/setup') {
@@ -615,40 +698,81 @@ const server = http.createServer(async (req, res) => {
       res.write(': stream-open\n\n');
       activeSseResponses.add(res);
 
-      let closed = false;
-      let tickTimer = null;
-      let keepaliveTimer = null;
-      const STREAM_INTERVAL_MS = 1000;
-
-      const scheduleNext = () => {
-        if (closed) return;
-        tickTimer = setTimeout(runTick, STREAM_INTERVAL_MS);
-      };
-
-      const runTick = async () => {
-        if (closed) return;
+      if (lastBroadcastPayload && Date.now() - lastBroadcastAt < 2500) {
         try {
-          const snapshot = await buildSnapshot(false);
-          if (!closed) res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
-        } catch (err) {
-          if (!closed) res.write(`event: error\ndata: ${JSON.stringify({ message: err.message })}\n\n`);
-        } finally {
-          scheduleNext();
+          res.write(lastBroadcastPayload);
+        } catch {
+          activeSseResponses.delete(res);
+          return;
+        }
+      }
+
+      const cleanup = () => {
+        activeSseResponses.delete(res);
+        if (activeSseResponses.size === 0) {
+          stopSseBroadcaster();
         }
       };
+      req.on('close', cleanup);
+      res.on('close', cleanup);
 
-      keepaliveTimer = setInterval(() => {
-        if (!closed) res.write(': keepalive\n\n');
-      }, 15000);
-
-      req.on('close', () => {
-        closed = true;
-        if (tickTimer) clearTimeout(tickTimer);
-        if (keepaliveTimer) clearInterval(keepaliveTimer);
-      });
-
-      await runTick();
+      ensureSseBroadcaster();
       return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/net/ping') {
+      return sendJson(res, 200, { ok: true, ts: Date.now() });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/net/download') {
+      const mb = Math.min(64, Math.max(1, Number(url.searchParams.get('mb')) || 16));
+      const totalBytes = Math.round(mb * 1024 * 1024);
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(totalBytes),
+        'Cache-Control': 'no-store',
+        ...SECURITY_HEADERS
+      });
+      let sent = 0;
+      let aborted = false;
+      req.on('close', () => { aborted = true; });
+      const pump = () => {
+        while (!aborted && sent < totalBytes) {
+          const remaining = totalBytes - sent;
+          const slice = remaining >= SPEEDTEST_CHUNK.length
+            ? SPEEDTEST_CHUNK
+            : SPEEDTEST_CHUNK.subarray(0, remaining);
+          sent += slice.length;
+          if (!res.write(slice)) {
+            res.once('drain', pump);
+            return;
+          }
+        }
+        if (!aborted) res.end();
+      };
+      pump();
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/net/upload') {
+      const maxBytes = 64 * 1024 * 1024;
+      let received = 0;
+      const startedAt = Date.now();
+      await new Promise((resolve, reject) => {
+        req.on('data', (chunk) => {
+          received += chunk.length;
+          if (received > maxBytes) {
+            const err = new Error('Speedtest-Upload-Limit (64 MB) überschritten.');
+            err.statusCode = 413;
+            req.pause();
+            reject(err);
+          }
+        });
+        req.on('end', resolve);
+        req.on('error', reject);
+      });
+      const durationMs = Math.max(1, Date.now() - startedAt);
+      return sendJson(res, 200, { ok: true, receivedBytes: received, durationMs });
     }
 
     if (req.method === 'POST' && pathname === '/api/media/scan') {
@@ -734,7 +858,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && pathname === '/api/files/trash') {
       const cfg = loadConfig();
-      return sendJson(res, 200, await listTrash(cfg.mediaPaths));
+      return sendJson(res, 200, await listTrash(cfg.mediaPaths, getTrashRetentionDays()));
     }
 
     if (req.method === 'POST' && pathname === '/api/files/trash/restore') {
@@ -825,9 +949,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/files/upload') {
       const dir = url.searchParams.get('dir') || '';
       const filename = url.searchParams.get('name') || 'upload.bin';
-      const buffer = await readRawBody(req);
       const cfg = loadConfig();
-      return sendJson(res, 200, await saveLiveUpload(dir, filename, buffer, cfg.mediaPaths));
+      return sendJson(res, 200, await saveLiveUploadStream(dir, filename, req, cfg.mediaPaths));
     }
 
     // ==================== SMART FEATURES (ANALYZER, WATCHDOG, WOL) ====================
@@ -1138,6 +1261,7 @@ function gracefulShutdown(signal) {
     clearInterval(idleTelemetryTimer);
     idleTelemetryTimer = null;
   }
+  stopSseBroadcaster();
   stopWatchdogScheduler();
   flushTelemetryHistorySync();
   for (const res of activeSseResponses) {

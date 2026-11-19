@@ -2671,3 +2671,327 @@ code {
     min-height: 44px;
   }
 }
+
+/* ==================== ANIMATED HEALTH SCORE & LAN SPEEDTEST ==================== */
+@keyframes hsFadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes hsPulseGlow {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.32);
+    opacity: 0.6;
+  }
+}
+
+.view-section.active {
+  animation: hsFadeSlideIn 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.subtab-panel.active {
+  animation: hsFadeSlideIn 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.health-score-card {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  background: linear-gradient(135deg, var(--bg-surface) 0%, var(--bg-elevated) 100%);
+  border: 1px solid var(--border);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.health-score-card.health-ok {
+  border-color: rgba(48, 209, 88, 0.28);
+}
+.health-score-card.health-warn {
+  border-color: rgba(255, 159, 10, 0.4);
+}
+.health-score-card.health-crit {
+  border-color: rgba(255, 69, 58, 0.45);
+}
+
+.health-ring-wrap {
+  position: relative;
+  width: 78px;
+  height: 78px;
+  flex-shrink: 0;
+}
+
+.health-ring-svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.health-ring-bg {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 7;
+}
+
+.health-ring-progress {
+  fill: none;
+  stroke: var(--status-ok, #30d158);
+  stroke-width: 7;
+  stroke-linecap: round;
+  stroke-dasharray: 226.2;
+  stroke-dashoffset: 226.2;
+  transition: stroke-dashoffset 0.75s cubic-bezier(0.22, 1, 0.36, 1), stroke 0.35s ease;
+}
+
+.health-score-card.health-warn .health-ring-progress {
+  stroke: var(--status-warn, #ff9f0a);
+}
+.health-score-card.health-crit .health-ring-progress {
+  stroke: var(--status-crit, #ff453a);
+}
+
+.health-ring-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.05;
+}
+
+.health-ring-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.health-ring-unit {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.health-score-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.health-score-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.health-pulse-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--status-ok, #30d158);
+  box-shadow: 0 0 0 3px rgba(48, 209, 88, 0.2);
+  animation: hsPulseGlow 2.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.health-score-card.health-warn .health-pulse-dot {
+  background: var(--status-warn, #ff9f0a);
+  box-shadow: 0 0 0 3px rgba(255, 159, 10, 0.22);
+}
+.health-score-card.health-crit .health-pulse-dot {
+  background: var(--status-crit, #ff453a);
+  box-shadow: 0 0 0 3px rgba(255, 69, 58, 0.25);
+}
+
+.health-score-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.health-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.health-pill {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+.health-pill:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+}
+.health-pill.pill-ok {
+  border-color: rgba(48, 209, 88, 0.3);
+  color: var(--status-ok, #30d158);
+}
+.health-pill.pill-warn {
+  border-color: rgba(255, 159, 10, 0.45);
+  color: var(--status-warn, #ff9f0a);
+}
+.health-pill.pill-crit {
+  border-color: rgba(255, 69, 58, 0.5);
+  color: var(--status-crit, #ff453a);
+}
+
+.health-score-actions {
+  flex-shrink: 0;
+}
+
+/* LAN Speedtest Gauge */
+.speedtest-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.speedtest-gauge-box {
+  position: relative;
+  width: 220px;
+  margin: 0 auto;
+}
+
+.speedtest-gauge-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.speedtest-arc-bg {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 13;
+  stroke-linecap: round;
+}
+
+.speedtest-arc-fill {
+  fill: none;
+  stroke: var(--accent-primary);
+  stroke-width: 13;
+  stroke-linecap: round;
+  stroke-dasharray: 270.2;
+  stroke-dashoffset: 270.2;
+  transition: stroke-dashoffset 0.35s cubic-bezier(0.22, 1, 0.36, 1), stroke 0.25s ease;
+}
+
+.speedtest-gauge-readout {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 10px;
+  text-align: center;
+}
+
+.speedtest-phase {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.speedtest-mbps {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--text-primary);
+}
+
+.speedtest-unit {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.speedtest-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.speedtest-metric {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.speedtest-metric-label {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.speedtest-metric-val {
+  font-size: 18px;
+  color: var(--text-primary);
+}
+
+.speedtest-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+@media (max-width: 780px) {
+  .health-score-card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .health-score-actions {
+    width: 100%;
+  }
+  .health-score-actions .btn-secondary {
+    width: 100%;
+  }
+  .speedtest-layout {
+    grid-template-columns: 1fr;
+  }
+  .speedtest-metrics-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view-section.active,
+  .subtab-panel.active,
+  .health-pulse-dot {
+    animation: none !important;
+  }
+  .health-ring-progress,
+  .speedtest-arc-fill {
+    transition: none !important;
+  }
+}
