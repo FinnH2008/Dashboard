@@ -2,7 +2,7 @@
 <html lang="de" data-theme="studio-dark" data-accent="blue">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Heimserver OS — Medien, Festplatten, Docker &amp; Smart-Features</title>
   <meta name="description" content="Aufgeräumtes Homeserver-Dashboard für Linux: Medien, Festplatten, Dateimanager mit Papierkorb, Docker &amp; Portainer, Host-Monitor, Push-Alarme &amp; Smart-Features." />
   <meta name="theme-color" id="meta-theme-color" content="#0a84ff" />
@@ -10,9 +10,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Homeserver" />
   <link rel="manifest" href="/manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="/icon.svg" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-  <link rel="stylesheet" href="/styles.css?v=4" />
+  <link rel="stylesheet" href="/styles.css?v=5" />
 </head>
 <body>
   <!-- Optional Auth Gate Overlay -->
@@ -163,6 +164,11 @@
           </div>
         </div>
       </header>
+
+      <div class="pwa-status-banner hidden" id="pwa-status-banner" role="status" aria-live="polite">
+        <span id="pwa-banner-text">Offline — zeige zwischengespeicherte App-Oberfläche.</span>
+        <button type="button" class="btn-primary btn-xs hidden" id="btn-pwa-update-reload">Jetzt aktualisieren</button>
+      </div>
 
       <main class="main-content">
       <!-- ==================== VIEW: OVERVIEW ==================== -->
@@ -624,9 +630,14 @@
           </div>
         </div>
 
-        <div class="settings-grid">
-          <!-- VPN Interfaces & Docker VPN -->
-          <article class="card panel-card">
+        <div class="view-subtabs" role="tablist" data-subtab-bar="host">
+          <button type="button" class="view-subtab active" data-subtab-group="host" data-subtab-target="live">Live &amp; Prozesse</button>
+          <button type="button" class="view-subtab" data-subtab-group="host" data-subtab-target="network">Netzwerk, Ports &amp; SSL</button>
+          <button type="button" class="view-subtab" data-subtab-group="host" data-subtab-target="security">Sicherheit (SSH &amp; Fail2ban)</button>
+        </div>
+
+        <!-- VPN Interfaces & Docker VPN -->
+        <article class="card panel-card subtab-panel active" data-subtab-group="host" data-subtab-panel="live">
             <div class="panel-header">
               <div>
                 <h2>VPN &amp; Tunnel-Interfaces</h2>
@@ -639,8 +650,8 @@
             </div>
           </article>
 
-          <!-- LAN Ping / Uptime Monitor -->
-          <article class="card panel-card">
+        <!-- LAN Ping / Uptime Monitor -->
+        <article class="card panel-card subtab-panel" data-subtab-group="host" data-subtab-panel="network">
             <div class="panel-header">
               <div>
                 <h2>LAN-Uptime &amp; Latenz-Monitor</h2>
@@ -671,10 +682,9 @@
               </table>
             </div>
           </article>
-        </div>
 
         <!-- Top 15 Host Processes -->
-        <article class="card panel-card">
+        <article class="card panel-card subtab-panel active" data-subtab-group="host" data-subtab-panel="live">
           <div class="panel-header">
             <div>
               <h2>Top 15 Host-Prozesse</h2>
@@ -698,7 +708,7 @@
         </article>
 
         <!-- Listening TCP Ports -->
-        <article class="card panel-card">
+        <article class="card panel-card subtab-panel" data-subtab-group="host" data-subtab-panel="network">
           <div class="panel-header">
             <div>
               <h2>Lauschende Server-Ports (TCP)</h2>
@@ -721,8 +731,7 @@
           </div>
         </article>
         <!-- SSH & Fail2ban + SSL Checker -->
-        <div class="settings-grid">
-          <article class="card panel-card">
+        <article class="card panel-card subtab-panel" data-subtab-group="host" data-subtab-panel="security">
             <div class="panel-header">
               <div>
                 <h2>SSH &amp; Fail2ban-Monitor</h2>
@@ -748,7 +757,7 @@
             </div>
           </article>
 
-          <article class="card panel-card">
+        <article class="card panel-card subtab-panel" data-subtab-group="host" data-subtab-panel="network">
             <div class="panel-header">
               <div>
                 <h2>SSL-Zertifikate &amp; Reverse-Proxy</h2>
@@ -779,7 +788,6 @@
               </table>
             </div>
           </article>
-        </div>
       </section>
 
       <!-- ==================== VIEW: DOCKER CONTAINERS ==================== -->
@@ -803,11 +811,16 @@
           </div>
         </div>
 
+        <div class="view-subtabs" role="tablist" data-subtab-bar="docker">
+          <button type="button" class="view-subtab active" data-subtab-group="docker" data-subtab-target="containers">Container</button>
+          <button type="button" class="view-subtab" data-subtab-group="docker" data-subtab-target="oom">Ressourcenlimits &amp; OOM-Verlauf</button>
+        </div>
+
         <div class="card docker-maintenance-bar hidden" id="docker-maintenance-bar">
           <span class="mono" id="docker-maintenance-msg">—</span>
         </div>
 
-        <article class="card panel-card">
+        <article class="card panel-card subtab-panel active" data-subtab-group="docker" data-subtab-panel="containers">
           <div class="table-wrap">
             <table class="data-table">
               <thead>
@@ -827,7 +840,7 @@
           </div>
         </article>
 
-        <article class="card panel-card" id="docker-oom-card">
+        <article class="card panel-card subtab-panel" data-subtab-group="docker" data-subtab-panel="oom" id="docker-oom-card">
           <div class="panel-header">
             <div>
               <h2>Ressourcenlimits &amp; OOM-Verlauf</h2>
@@ -1025,9 +1038,14 @@
           </div>
         </div>
 
-        <div class="settings-grid">
-          <!-- Container Watchdog -->
-          <article class="card panel-card">
+        <div class="view-subtabs" role="tablist" data-subtab-bar="automation">
+          <button type="button" class="view-subtab active" data-subtab-group="automation" data-subtab-target="schedules">Zeitpläne &amp; Auto-Update</button>
+          <button type="button" class="view-subtab" data-subtab-group="automation" data-subtab-target="watchdog">Watchdog &amp; Alarme</button>
+          <button type="button" class="view-subtab" data-subtab-group="automation" data-subtab-target="wol">Wake-on-LAN</button>
+        </div>
+
+        <!-- Container Watchdog -->
+        <article class="card panel-card subtab-panel" data-subtab-group="automation" data-subtab-panel="watchdog">
             <div class="panel-header">
               <div>
                 <h2>Container-Watchdog (Auto-Heal)</h2>
@@ -1090,7 +1108,7 @@
           </article>
 
           <!-- Wake-on-LAN -->
-          <article class="card panel-card">
+          <article class="card panel-card subtab-panel" data-subtab-group="automation" data-subtab-panel="wol">
             <div class="panel-header">
               <div>
                 <h2>Wake-on-LAN (LAN-Geräte)</h2>
@@ -1121,10 +1139,9 @@
               </table>
             </div>
           </article>
-        </div>
 
         <!-- Push Notifications -->
-        <article class="card panel-card">
+        <article class="card panel-card subtab-panel" data-subtab-group="automation" data-subtab-panel="watchdog">
           <div class="panel-header">
             <div>
               <h2>Push-Alarme &amp; Benachrichtigungen</h2>
@@ -1201,7 +1218,7 @@
         </article>
 
         <!-- Daily Scheduler -->
-        <article class="card panel-card">
+        <article class="card panel-card subtab-panel active" data-subtab-group="automation" data-subtab-panel="schedules">
           <div class="panel-header">
             <div>
               <h2>Tägliche Zeitpläne (Scheduler)</h2>
@@ -1242,7 +1259,7 @@
         </article>
 
         <!-- Docker Auto-Update Schedule (Watchtower-Ersatz) -->
-        <article class="card panel-card">
+        <article class="card panel-card subtab-panel active" data-subtab-group="automation" data-subtab-panel="schedules">
           <div class="panel-header">
             <div>
               <h2>Container Auto-Update Zeitplan (Watchtower-Ersatz)</h2>
@@ -1274,7 +1291,7 @@
         </article>
 
         <!-- Automation Event Log -->
-        <article class="card panel-card">
+        <article class="card panel-card subtab-panel active" data-subtab-group="automation" data-subtab-panel="schedules">
           <div class="panel-header">
             <div>
               <h2>Automations-Protokoll</h2>
@@ -1307,8 +1324,13 @@
           </div>
         </div>
 
+        <div class="view-subtabs" role="tablist" data-subtab-bar="settings">
+          <button type="button" class="view-subtab active" data-subtab-group="settings" data-subtab-target="general">Allgemein &amp; Design</button>
+          <button type="button" class="view-subtab" data-subtab-group="settings" data-subtab-target="security">Sicherheit, 2FA &amp; Protokoll</button>
+        </div>
+
         <!-- Theme & Accent Picker Card -->
-        <article class="card panel-card">
+        <article class="card panel-card subtab-panel active" data-subtab-group="settings" data-subtab-panel="general">
           <div class="panel-header">
             <div>
               <h2>Design, Themes &amp; Akzentfarbe</h2>
@@ -1387,7 +1409,7 @@
           </div>
         </article>
 
-        <div class="settings-grid">
+        <div class="settings-grid subtab-panel active" data-subtab-group="settings" data-subtab-panel="general">
           <article class="card panel-card">
             <h2>Allgemein &amp; Speicherpfade</h2>
             <form id="form-general-settings" class="settings-form">
@@ -1463,7 +1485,7 @@
         </div>
 
         <!-- Security: Password Management, Audit Log & Mobile PWA -->
-        <div class="settings-grid">
+        <div class="settings-grid subtab-panel" data-subtab-group="settings" data-subtab-panel="security">
           <article class="card panel-card">
             <div class="panel-header">
               <div>
@@ -2058,7 +2080,78 @@
     </div>
   </div>
 
-  <script src="/qr.js?v=4"></script>
-  <script src="/app.js?v=4"></script>
+  <!-- Mobile More Drawer / Bottom Sheet -->
+  <div class="mobile-sheet-backdrop hidden" id="mobile-more-backdrop"></div>
+  <aside class="mobile-more-sheet hidden" id="mobile-more-sheet" aria-label="Weitere Bereiche">
+    <div class="mobile-sheet-handle" aria-hidden="true"></div>
+    <div class="mobile-sheet-header">
+      <div>
+        <strong>Alle Bereiche</strong>
+        <div class="muted-text" id="mobile-sheet-host-spec" style="font-size:11px;">Heimserver NAS</div>
+      </div>
+      <button type="button" class="modal-close" id="btn-mobile-more-close" aria-label="Menü schließen">&times;</button>
+    </div>
+    <div class="mobile-sheet-grid">
+      <button type="button" class="mobile-sheet-item" data-view="storage">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14a9 3 0 0 0 18 0V5"></path><path d="M3 12a9 3 0 0 0 18 0"></path></svg>
+        <span>Festplatten</span>
+      </button>
+      <button type="button" class="mobile-sheet-item" data-view="smb">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="14" width="20" height="7" rx="2"></rect><path d="M6 14V7a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v7"></path></svg>
+        <span>Freigaben (SMB)</span>
+      </button>
+      <button type="button" class="mobile-sheet-item" data-view="portainer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="6" rx="1.5"></rect><rect x="3" y="13" width="8" height="8" rx="1.5"></rect><rect x="13" y="13" width="8" height="8" rx="1.5"></rect></svg>
+        <span>Portainer &amp; Stacks</span>
+      </button>
+      <button type="button" class="mobile-sheet-item" data-view="appstore">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg>
+        <span>App Store</span>
+      </button>
+      <button type="button" class="mobile-sheet-item" data-view="analyzer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"></path><path d="M22 12A10 10 0 0 0 12 2v10z"></path></svg>
+        <span>Speicher-Analyse</span>
+      </button>
+      <button type="button" class="mobile-sheet-item" data-view="automation">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
+        <span>Automation &amp; WoL</span>
+      </button>
+      <button type="button" class="mobile-sheet-item" data-view="settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"></circle><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path></svg>
+        <span>Einstellungen</span>
+      </button>
+    </div>
+    <div class="mobile-sheet-pwa" id="mobile-sheet-pwa-box">
+      <div class="muted-text" id="mobile-pwa-hint" style="font-size:12px;">Als App installieren für Vollbild-Ansicht.</div>
+      <button type="button" class="btn-primary btn-sm hidden" id="btn-mobile-pwa-install">App installieren</button>
+    </div>
+  </aside>
+
+  <!-- Mobile Bottom Navigation -->
+  <nav class="mobile-bottom-nav" id="mobile-bottom-nav" aria-label="Mobile Hauptnavigation">
+    <button type="button" class="mobile-nav-btn active" data-view="overview">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9" rx="1.5"></rect><rect x="14" y="3" width="7" height="5" rx="1.5"></rect><rect x="14" y="12" width="7" height="9" rx="1.5"></rect><rect x="3" y="16" width="7" height="5" rx="1.5"></rect></svg>
+      <span>Übersicht</span>
+    </button>
+    <button type="button" class="mobile-nav-btn" data-view="files">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+      <span>Dateien</span>
+    </button>
+    <button type="button" class="mobile-nav-btn" data-view="docker">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+      <span>Container</span>
+    </button>
+    <button type="button" class="mobile-nav-btn" data-view="host">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+      <span>Host</span>
+    </button>
+    <button type="button" class="mobile-nav-btn" id="btn-mobile-more" aria-expanded="false" aria-controls="mobile-more-sheet">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle><circle cx="5" cy="12" r="1.5"></circle></svg>
+      <span>Mehr</span>
+    </button>
+  </nav>
+
+  <script src="/qr.js?v=5"></script>
+  <script src="/app.js?v=5"></script>
 </body>
 </html>

@@ -310,36 +310,103 @@
   }
 
   function initPwa() {
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {});
-    }
+    const banner = document.getElementById('pwa-status-banner');
+    const bannerText = document.getElementById('pwa-banner-text');
+    const reloadBtn = document.getElementById('btn-pwa-update-reload');
     const statusEl = document.getElementById('pwa-status-text');
     const installBtn = document.getElementById('btn-pwa-install');
+    const mobileInstallBtn = document.getElementById('btn-mobile-pwa-install');
+    const mobileHint = document.getElementById('mobile-pwa-hint');
+
+    let waitingWorker = null;
+
+    function syncOnlineBanner() {
+      if (!banner || !bannerText) return;
+      if (!navigator.onLine) {
+        bannerText.textContent = 'Offline — zeige zwischengespeicherte App-Oberfläche.';
+        reloadBtn?.classList.add('hidden');
+        banner.classList.remove('hidden');
+      } else if (!waitingWorker) {
+        banner.classList.add('hidden');
+      }
+    }
+
+    window.addEventListener('online', syncOnlineBanner);
+    window.addEventListener('offline', syncOnlineBanner);
+
+    if ('serviceWorker' in navigator) {
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!refreshing) {
+          refreshing = true;
+          window.location.reload();
+        }
+      });
+
+      navigator.serviceWorker.register('/sw.js').then((reg) => {
+        const showUpdate = (worker) => {
+          waitingWorker = worker;
+          if (banner && bannerText) {
+            bannerText.textContent = 'Neue Dashboard-Version verfügbar.';
+            reloadBtn?.classList.remove('hidden');
+            banner.classList.remove('hidden');
+          }
+        };
+        if (reg.waiting) showUpdate(reg.waiting);
+        reg.addEventListener('updatefound', () => {
+          const nw = reg.installing;
+          if (!nw) return;
+          nw.addEventListener('statechange', () => {
+            if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+              showUpdate(nw);
+            }
+          });
+        });
+      }).catch(() => {});
+    }
+
+    reloadBtn?.addEventListener('click', () => {
+      if (waitingWorker) waitingWorker.postMessage({ type: 'SKIP_WAITING' });
+      else window.location.reload();
+    });
+
     const isStandalone = window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
-    if (isStandalone && statusEl) {
-      statusEl.textContent = 'Dashboard läuft bereits als installierte Web-App.';
+    const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    if (isStandalone) {
+      if (statusEl) statusEl.textContent = 'Dashboard läuft bereits als installierte Web-App.';
+      if (mobileHint) mobileHint.textContent = 'Installiert — läuft als eigenständige App.';
+    } else if (isIos && mobileHint) {
+      mobileHint.textContent = 'iOS: Teilen-Symbol → „Zum Home-Bildschirm“ antippen.';
     }
 
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
       state.deferredInstallPrompt = e;
-      if (installBtn) installBtn.classList.remove('hidden');
+      installBtn?.classList.remove('hidden');
+      mobileInstallBtn?.classList.remove('hidden');
       if (statusEl) statusEl.textContent = 'Bereit zur Installation als eigenständige App auf diesem Gerät.';
+      if (mobileHint) mobileHint.textContent = 'Als eigenständige App auf dem Startbildschirm installieren.';
     });
 
     window.addEventListener('appinstalled', () => {
       state.deferredInstallPrompt = null;
-      if (installBtn) installBtn.classList.add('hidden');
+      installBtn?.classList.add('hidden');
+      mobileInstallBtn?.classList.add('hidden');
       if (statusEl) statusEl.textContent = 'App erfolgreich installiert.';
+      if (mobileHint) mobileHint.textContent = 'App erfolgreich installiert.';
     });
 
-    installBtn?.addEventListener('click', async () => {
+    async function triggerInstall() {
       if (!state.deferredInstallPrompt) return;
       state.deferredInstallPrompt.prompt();
       await state.deferredInstallPrompt.userChoice.catch(() => {});
       state.deferredInstallPrompt = null;
-      installBtn.classList.add('hidden');
-    });
+      installBtn?.classList.add('hidden');
+      mobileInstallBtn?.classList.add('hidden');
+    }
+
+    installBtn?.addEventListener('click', triggerInstall);
+    mobileInstallBtn?.addEventListener('click', triggerInstall);
   }
 
   // ==================== OVERVIEW WIDGETS ====================
@@ -403,6 +470,75 @@
     }
   }
 
+  function closeMobileMoreSheet() {
+    document.getElementById('mobile-more-sheet')?.classList.add('hidden');
+    document.getElementById('mobile-more-backdrop')?.classList.add('hidden');
+    document.getElementById('btn-mobile-more')?.setAttribute('aria-expanded', 'false');
+  }
+
+  function initMobileNav() {
+    const moreBtn = document.getElementById('btn-mobile-more');
+    const closeBtn = document.getElementById('btn-mobile-more-close');
+    const backdrop = document.getElementById('mobile-more-backdrop');
+    const sheet = document.getElementById('mobile-more-sheet');
+
+    moreBtn?.addEventListener('click', () => {
+      const isOpen = sheet && !sheet.classList.contains('hidden');
+      if (isOpen) {
+        closeMobileMoreSheet();
+      } else {
+        const hostSub = document.getElementById('host-subtitle')?.textContent;
+        const specEl = document.getElementById('mobile-sheet-host-spec');
+        if (specEl && hostSub) specEl.textContent = hostSub;
+        sheet?.classList.remove('hidden');
+        backdrop?.classList.remove('hidden');
+        moreBtn.setAttribute('aria-expanded', 'true');
+      }
+    });
+
+    closeBtn?.addEventListener('click', closeMobileMoreSheet);
+    backdrop?.addEventListener('click', closeMobileMoreSheet);
+
+    document.querySelectorAll('.mobile-nav-btn[data-view], .mobile-sheet-item[data-view]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const target = btn.dataset.view;
+        if (target) {
+          switchView(target);
+          closeMobileMoreSheet();
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      });
+    });
+  }
+
+  function activateSubTab(group, target) {
+    document.querySelectorAll(`.view-subtab[data-subtab-group="${group}"]`).forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.subtabTarget === target);
+    });
+    document.querySelectorAll(`.subtab-panel[data-subtab-group="${group}"]`).forEach((panel) => {
+      panel.classList.toggle('active', panel.dataset.subtabPanel === target);
+    });
+    try {
+      localStorage.setItem(`hs_subtab_${group}`, target);
+    } catch {}
+  }
+
+  function initSubTabs() {
+    document.querySelectorAll('.view-subtab[data-subtab-group]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        activateSubTab(btn.dataset.subtabGroup, btn.dataset.subtabTarget);
+      });
+    });
+    document.querySelectorAll('[data-subtab-bar]').forEach((bar) => {
+      const group = bar.dataset.subtabBar;
+      let saved = null;
+      try { saved = localStorage.getItem(`hs_subtab_${group}`); } catch {}
+      if (saved && bar.querySelector(`[data-subtab-target="${saved}"]`)) {
+        activateSubTab(group, saved);
+      }
+    });
+  }
+
   // ==================== NAVIGATION & MODALS ====================
   function switchView(viewName) {
     state.activeView = viewName;
@@ -411,6 +547,15 @@
     document.querySelectorAll('.nav-tab').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.view === viewName);
     });
+    const primaryMobileViews = new Set(['overview', 'files', 'docker', 'host']);
+    document.querySelectorAll('.mobile-nav-btn[data-view]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.view === viewName);
+    });
+    document.getElementById('btn-mobile-more')?.classList.toggle('active', !primaryMobileViews.has(viewName));
+    document.querySelectorAll('.mobile-sheet-item[data-view]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.view === viewName);
+    });
+    closeMobileMoreSheet();
     document.querySelectorAll('.view-section').forEach((sec) => {
       sec.classList.toggle('active', sec.id === `view-${viewName}`);
     });
@@ -5997,8 +6142,14 @@
   async function init() {
     initTheme();
     initPwa();
+    initSubTabs();
+    initMobileNav();
     bindEvents();
     localStorage.removeItem('hs_mode');
+    const urlView = new URLSearchParams(window.location.search).get('view');
+    if (urlView && VIEW_TITLES[urlView]) {
+      switchView(urlView);
+    }
     const ok = await checkAuthAndStart();
     if (ok) connectStream();
   }

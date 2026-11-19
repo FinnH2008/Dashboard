@@ -1,19 +1,30 @@
-const CACHE_NAME = 'homeserver-shell-v4';
+const CACHE_NAME = 'homeserver-shell-v5';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
-  '/styles.css?v=4',
-  '/qr.js?v=4',
-  '/app.js?v=4',
+  '/styles.css?v=5',
+  '/qr.js?v=5',
+  '/app.js?v=5',
   '/manifest.webmanifest',
-  '/icon.svg'
+  '/icon.svg',
+  '/icon-192.png',
+  '/icon-512.png',
+  '/icon-maskable-512.png'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS)).catch(() => {})
   );
-  self.skipWaiting();
+  if (!self.registration.active) {
+    self.skipWaiting();
+  }
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data === 'SKIP_WAITING' || event.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', (event) => {
@@ -46,6 +57,11 @@ self.addEventListener('fetch', (event) => {
         }
         return res;
       })
-      .catch(() => caches.match(event.request))
+      .catch(() => {
+        if (event.request.mode === 'navigate') {
+          return caches.match('/index.html') || caches.match('/');
+        }
+        return caches.match(event.request);
+      })
   );
 });

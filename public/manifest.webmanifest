@@ -1,18 +1,65 @@
 {
+  "id": "/",
   "name": "Heimserver OS Dashboard",
   "short_name": "Homeserver",
   "description": "Linux Homeserver Dashboard für Medien, Festplatten, Docker, SMB & Host-Monitoring",
-  "start_url": "/",
+  "start_url": "/?source=pwa",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#141518",
+  "background_color": "#0f1012",
   "theme_color": "#0a84ff",
   "orientation": "any",
+  "categories": ["utilities", "system"],
   "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
     {
       "src": "/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Systemübersicht",
+      "short_name": "Übersicht",
+      "url": "/?view=overview",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Dateimanager",
+      "short_name": "Dateien",
+      "url": "/?view=files",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Docker Container",
+      "short_name": "Container",
+      "url": "/?view=docker",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Host & Netzwerk",
+      "short_name": "Host",
+      "url": "/?view=host",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
     }
   ]
 }
