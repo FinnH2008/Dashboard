@@ -43,6 +43,7 @@ const {
   createAndStartContainer,
   inspectContainerConfig,
   recreateOrUpdateContainer,
+  pullContainerImage,
   checkContainerUpdates,
   getCachedContainerUpdates,
   getDockerDiskUsage,
@@ -1248,10 +1249,16 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { id: containerId, logs });
     }
 
-    const actionMatch = pathname.match(/^\/api\/docker\/([^/]+)\/(start|stop|restart|remove)$/);
+    const actionMatch = pathname.match(/^\/api\/docker\/([^/]+)\/(start|stop|restart|remove|pull)$/);
     if (req.method === 'POST' && actionMatch) {
       const containerId = safeDecodeParam(actionMatch[1]);
       const action = actionMatch[2];
+
+      if (action === 'pull') {
+        const result = await pullContainerImage(containerId);
+        logAuditEvent(req, 'docker.pull', `Neuestes Image für "${result.name}" (${result.image}) gezogen.`, 'info');
+        return sendJson(res, 200, result);
+      }
 
       if (action === 'remove') {
         const result = await removeContainer(containerId, true);
@@ -1260,6 +1267,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const result = await controlContainer(containerId, action);
+      logAuditEvent(req, `docker.${action}`, `Container ${containerId}: Aktion "${action}" ausgeführt.`, 'info');
       return sendJson(res, 200, result);
     }
 

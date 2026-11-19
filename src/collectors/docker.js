@@ -746,6 +746,19 @@ async function recreateOrUpdateContainer(containerId, overrideConfig = null) {
   });
 }
 
+async function pullContainerImage(containerId) {
+  if (!ALLOW_CONTROL) throw new Error('Container-Steuerung ist deaktiviert (ALLOW_DOCKER_CONTROL=true setzen).');
+  const current = await inspectContainerConfig(containerId);
+  const fullImage = await pullImage(current.image);
+  invalidateDockerListCache();
+  return {
+    ok: true,
+    id: containerId,
+    name: current.name,
+    image: fullImage
+  };
+}
+
 function parseImageRef(rawImage) {
   const withoutDigest = String(rawImage || '').split('@')[0].trim();
   if (!withoutDigest) return null;
@@ -1109,6 +1122,7 @@ module.exports = {
   createAndStartContainer,
   inspectContainerConfig,
   recreateOrUpdateContainer,
+  pullContainerImage,
   checkContainerUpdates,
   getCachedContainerUpdates,
   getDockerDiskUsage,

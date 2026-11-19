@@ -2051,12 +2051,24 @@
     };
 
     document.getElementById('overview-docker-tbody').innerHTML = overviewContainers
-      .map((c) => `
+      .map((c) => {
+        const quickCtrl = docker.allowControl
+          ? c.state === 'running'
+            ? `<button class="btn-secondary btn-sm" data-docker-action="restart" data-cid="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="Container neu starten">Neustart</button>`
+            : `<button class="btn-secondary btn-sm" data-docker-action="start" data-cid="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="Container starten">Start</button>`
+          : '';
+        const quickPullUpd = docker.allowControl
+          ? c.updateAvailable
+            ? `<button class="btn-primary btn-sm" data-update-container="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="Neues Image ziehen &amp; Container updaten">Update</button>`
+            : `<button class="btn-secondary btn-sm" data-docker-action="pull" data-cid="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="Neuestes Image ziehen (docker pull)">Pull</button>`
+          : '';
+        return `
         <tr>
           <td>
             <div class="container-name">
               ${escapeHtml(c.name)}
               ${c.stackName ? `<span class="tag" style="margin-left:5px;font-size:10px;">Stack: ${escapeHtml(c.stackName)}</span>` : ''}
+              ${c.updateAvailable ? `<button type="button" class="tag tag-warn" data-open-update-details="available" style="margin-left:5px;font-size:10px;cursor:pointer;">Update</button>` : ''}
             </div>
             <div class="container-sub mono">${escapeHtml(c.image)}</div>
           </td>
@@ -2065,10 +2077,15 @@
           <td class="num mono">${c.state === 'running' ? formatBytesBinary(c.memoryBytes) : '—'}</td>
           <td>${renderPortBadges(c.ports)}</td>
           <td class="num">
-            <button class="btn-secondary btn-sm" data-view-logs="${escapeHtml(c.id)}" data-container-name="${escapeHtml(c.name)}">Logs</button>
+            <div class="table-actions-row">
+              ${quickCtrl}
+              ${quickPullUpd}
+              <button class="btn-secondary btn-sm" data-view-logs="${escapeHtml(c.id)}" data-container-name="${escapeHtml(c.name)}">Logs</button>
+            </div>
           </td>
         </tr>
-      `)
+      `;
+      })
       .join('');
 
     const fullSearch = (document.getElementById('docker-full-search').value || '').toLowerCase();
@@ -2088,14 +2105,15 @@
         const controlBtns = docker.allowControl
           ? c.state === 'running'
             ? `<button class="btn-secondary btn-sm" data-open-term="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="Shell-Terminal öffnen">&gt;_</button>
-               <button class="btn-secondary btn-sm" data-docker-action="restart" data-cid="${escapeHtml(c.id)}">Neustart</button>
-               <button class="btn-secondary btn-sm" data-docker-action="stop" data-cid="${escapeHtml(c.id)}">Stop</button>`
-            : `<button class="btn-secondary btn-sm" data-docker-action="start" data-cid="${escapeHtml(c.id)}">Start</button>
+               <button class="btn-secondary btn-sm" data-docker-action="restart" data-cid="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}">Neustart</button>
+               <button class="btn-secondary btn-sm" data-docker-action="stop" data-cid="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}">Stop</button>`
+            : `<button class="btn-secondary btn-sm" data-docker-action="start" data-cid="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}">Start</button>
                <button class="btn-danger-ghost btn-sm" data-docker-action="remove" data-cid="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}">Löschen</button>`
           : '';
         const editUpdateBtns = docker.allowControl
-          ? `<button class="btn-secondary btn-sm" data-edit-container="${escapeHtml(c.id)}" title="Ports/Volumes bearbeiten">Bearbeiten</button>
-             <button class="btn-secondary btn-sm" data-update-container="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="Neuestes Image ziehen & neu starten">Update</button>`
+          ? `<button class="btn-secondary btn-sm" data-docker-action="pull" data-cid="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="Neuestes Image ziehen (ohne Neustart)">Pull</button>
+             <button class="btn-secondary btn-sm" data-update-container="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="Neuestes Image ziehen &amp; Container neu erstellen">Update</button>
+             <button class="btn-secondary btn-sm" data-edit-container="${escapeHtml(c.id)}" title="Ports/Volumes bearbeiten">Bearbeiten</button>`
           : '';
         const portainerLink = portainerBase && portainerBase !== '#' && c.fullId
           ? `<a class="btn-secondary btn-sm" href="${escapeHtml(safeHref(`${portainerBase}/#!/${endpointId}/docker/containers/${c.fullId}`))}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;" title="In Portainer öffnen">Portainer ↗</a>`
@@ -5991,20 +6009,47 @@
       const dockerActionBtn = e.target.closest('[data-docker-action]');
       if (dockerActionBtn) {
         const cid = dockerActionBtn.dataset.cid;
+        const cname = dockerActionBtn.dataset.cname || cid;
         const action = dockerActionBtn.dataset.dockerAction;
-        if (action === 'remove' && !confirm(`Container "${dockerActionBtn.dataset.cname || cid}" wirklich löschen?`)) return;
+        if (action === 'remove' && !confirm(`Container "${cname}" wirklich löschen?`)) return;
+        const actionLabels = {
+          start: `Starte „${cname}“…`,
+          stop: `Stoppe „${cname}“…`,
+          restart: `Starte „${cname}“ neu…`,
+          pull: `Ziehe neuestes Image für „${cname}“…`,
+          remove: `Lösche „${cname}“…`
+        };
+        const origText = dockerActionBtn.textContent;
         dockerActionBtn.disabled = true;
+        dockerActionBtn.textContent = 'Lädt…';
+        const bar = document.getElementById('docker-maintenance-bar');
+        const msg = document.getElementById('docker-maintenance-msg');
+        if (bar && msg) {
+          bar.classList.remove('hidden');
+          msg.textContent = actionLabels[action] || `Führe ${action} aus…`;
+        }
+        startGlobalProgress();
+        setInlineProgress('docker-maintenance-progress', { active: true, label: actionLabels[action] || `Aktion ${action} läuft…` });
         try {
           const res = await fetch(`/api/docker/${encodeURIComponent(cid)}/${action}`, { method: 'POST' });
+          const d = await res.json().catch(() => ({}));
           if (!res.ok) {
-            const d = await res.json().catch(() => ({}));
+            if (msg) msg.textContent = `Fehler bei „${cname}“: ${d.error || 'Aktion fehlgeschlagen'}`;
             alert(d.error || 'Container-Aktion fehlgeschlagen');
           } else {
+            if (msg) {
+              msg.textContent = action === 'pull'
+                ? `Image ${d.image || ''} für „${cname}“ erfolgreich gepullt.`
+                : `Aktion „${action}“ für „${cname}“ abgeschlossen.`;
+            }
             const snapRes = await fetch(`/api/snapshot`);
             if (snapRes.ok) handleSnapshot(await snapRes.json());
           }
         } finally {
+          setInlineProgress('docker-maintenance-progress', { active: false });
+          endGlobalProgress();
           dockerActionBtn.disabled = false;
+          dockerActionBtn.textContent = origText;
         }
         return;
       }
