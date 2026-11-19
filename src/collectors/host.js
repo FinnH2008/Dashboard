@@ -217,7 +217,20 @@ function collectListeningPorts(dockerContainers = []) {
     const key = `${entry.proto}:${entry.port}:${entry.address}`;
     if (!merged.has(key)) {
       const containers = portToContainers.get(entry.port) || [];
-      const scope = entry.address === '127.0.0.1' || entry.address === '::1' ? 'localhost' : 'LAN / Alle';
+      const addrLower = String(entry.address || '').toLowerCase();
+      let scope = 'LAN / Alle';
+      if (
+        addrLower === '::1' ||
+        addrLower.startsWith('127.') ||
+        addrLower.startsWith('::ffff:127.')
+      ) {
+        scope = 'localhost';
+      } else if (
+        /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(addrLower) ||
+        addrLower.startsWith('fd7a:115c:a1e0:')
+      ) {
+        scope = 'Tailscale / VPN';
+      }
       merged.set(key, {
         proto: entry.proto,
         address: entry.address,

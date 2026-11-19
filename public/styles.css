@@ -434,6 +434,8 @@ body {
   letter-spacing: -0.01em;
   color: var(--text-primary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .topbar-controls {
@@ -2422,9 +2424,9 @@ code {
   background: var(--bg-elevated);
 }
 .view-subtab.active {
-  background: var(--accent-soft);
+  background: var(--accent-primary-soft);
   color: var(--accent-primary);
-  border-color: var(--accent-border, rgba(10, 132, 255, 0.35));
+  border-color: var(--accent-primary);
 }
 
 .subtab-panel {
@@ -2444,7 +2446,7 @@ code {
   justify-content: space-between;
   gap: 10px;
   padding: 8px 16px;
-  background: var(--accent-soft);
+  background: var(--accent-primary-soft);
   border-bottom: 1px solid var(--border);
   font-size: 12.5px;
   color: var(--text-primary);
@@ -2473,7 +2475,15 @@ code {
     position: sticky;
     top: 0;
     z-index: 40;
+    height: auto;
+    min-height: calc(var(--topbar-h) + env(safe-area-inset-top));
     padding-top: env(safe-area-inset-top);
+    background: var(--bg-canvas);
+    align-items: stretch;
+  }
+  .topbar-inner {
+    min-height: var(--topbar-h);
+    padding: 6px 12px;
   }
   .main-content {
     padding: 16px 14px calc(86px + env(safe-area-inset-bottom));
@@ -2512,7 +2522,7 @@ code {
   }
   .mobile-nav-btn.active {
     color: var(--accent-primary);
-    background: var(--accent-soft);
+    background: var(--accent-primary-soft);
   }
   .mobile-sheet-backdrop {
     display: block;
@@ -2579,7 +2589,7 @@ code {
   }
   .mobile-sheet-item.active {
     border-color: var(--accent-primary);
-    background: var(--accent-soft);
+    background: var(--accent-primary-soft);
     color: var(--accent-primary);
   }
   .mobile-sheet-pwa {
@@ -2591,6 +2601,12 @@ code {
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     background: var(--bg-elevated);
+  }
+  .port-addr-cell {
+    max-width: 132px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 

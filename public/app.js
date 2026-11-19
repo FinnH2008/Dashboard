@@ -3360,8 +3360,8 @@
             .map((p) => `
               <tr>
                 <td class="num mono"><strong>${Number(p.port)}</strong></td>
-                <td class="mono">${escapeHtml(p.proto || 'tcp')}</td>
-                <td class="mono" style="font-size:11.5px;">${escapeHtml(p.address || '*')}</td>
+                <td class="mono hide-sm">${escapeHtml(p.proto || 'tcp')}</td>
+                <td class="mono port-addr-cell" style="font-size:11.5px;" title="${escapeHtml(p.address || '*')}">${escapeHtml(p.address || '*')}</td>
                 <td><span class="tag">${escapeHtml(p.scope || 'LAN/Alle')}</span></td>
                 <td class="mono" style="font-size:11.5px;color:var(--text-secondary);">${escapeHtml(p.service || '—')}</td>
               </tr>

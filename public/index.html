@@ -13,7 +13,7 @@
   <link rel="apple-touch-icon" href="/icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-  <link rel="stylesheet" href="/styles.css?v=6" />
+  <link rel="stylesheet" href="/styles.css?v=7" />
 </head>
 <body>
   <!-- Optional Auth Gate Overlay -->
@@ -741,12 +741,12 @@
               <p class="panel-subtitle" id="host-ports-subtitle">Alle aktiven Listening-Sockets des Hosts inkl. Container-Zuordnung</p>
             </div>
           </div>
-          <div class="table-wrap">
+          <div class="table-wrap" style="max-height:360px;overflow:auto;">
             <table class="data-table">
               <thead>
                 <tr>
                   <th class="num">Port</th>
-                  <th>Protokoll</th>
+                  <th class="hide-sm">Protokoll</th>
                   <th>Bind-Adresse</th>
                   <th>Bereich</th>
                   <th>Dienst / Container</th>
@@ -2229,7 +2229,7 @@
     </button>
   </nav>
 
-  <script src="/qr.js?v=6"></script>
-  <script src="/app.js?v=6"></script>
+  <script src="/qr.js?v=7"></script>
+  <script src="/app.js?v=7"></script>
 </body>
 </html>
