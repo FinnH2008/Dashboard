@@ -155,3 +155,23 @@ test('Docker updates cache endpoint returns structured payload', async () => {
   assert.equal(typeof data.updatesAvailable, 'number');
   assert.equal(typeof data.checkedImages, 'number');
 });
+
+test('Client network context detects Tailscale vs LAN access', async () => {
+  const tsRes = await fetch(`${BASE_URL}/api/client/context`, {
+    headers: { 'X-Forwarded-For': '100.64.41.81' }
+  });
+  assert.equal(tsRes.status, 200);
+  const tsData = await tsRes.json();
+  assert.equal(tsData.network, 'tailscale');
+  assert.equal(tsData.viaTailscale, true);
+  assert.equal(tsData.viaLan, false);
+
+  const lanRes = await fetch(`${BASE_URL}/api/client/context`, {
+    headers: { 'X-Forwarded-For': '192.168.178.25' }
+  });
+  assert.equal(lanRes.status, 200);
+  const lanData = await lanRes.json();
+  assert.equal(lanData.network, 'lan');
+  assert.equal(lanData.viaLan, true);
+  assert.equal(lanData.viaTailscale, false);
+});

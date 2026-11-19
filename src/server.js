@@ -25,7 +25,7 @@ const {
   verifyToken
 } = require('./auth');
 const { attachTerminalUpgrade } = require('./terminal');
-const { collectSystemMetrics, triggerHostPower } = require('./collectors/system');
+const { collectSystemMetrics, triggerHostPower, getHostNetworkAddresses } = require('./collectors/system');
 const {
   collectStorageMetrics,
   getStorageHistory,
@@ -477,6 +477,27 @@ const server = http.createServer(async (req, res) => {
   try {
     if ((req.method === 'GET' || req.method === 'HEAD') && pathname === '/api/health') {
       return sendJson(res, 200, { status: 'ok', mode: 'live', uptime: process.uptime() });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/client/context') {
+      const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+      const rawRemote = String(fwd || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+      const hostHeader = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0].toLowerCase();
+      const isTsIp = (ip) => /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip) || /^\[?fd7a:115c:a1e0:/i.test(ip);
+      const isLanIp = (ip) => ip.startsWith('192.168.') || ip.startsWith('10.') || /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip) || ip === '127.0.0.1' || ip === '::1';
+      const viaTailscale = isTsIp(rawRemote) || isTsIp(hostHeader) || hostHeader.endsWith('.ts.net');
+      const viaLan = !viaTailscale && (isLanIp(rawRemote) || isLanIp(hostHeader) || hostHeader.endsWith('.local') || hostHeader === 'localhost');
+      const addrs = getHostNetworkAddresses();
+      return sendJson(res, 200, {
+        clientIp: rawRemote,
+        hostHeader,
+        network: viaTailscale ? 'tailscale' : viaLan ? 'lan' : 'remote',
+        viaTailscale,
+        viaLan,
+        lanIp: addrs.lanIp,
+        tailscaleIp: addrs.tailscaleIp,
+        allServerIps: addrs.allServerIps
+      });
     }
 
     if (req.method === 'GET' && pathname === '/api/auth/status') {

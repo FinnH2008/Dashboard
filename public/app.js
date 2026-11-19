@@ -1043,7 +1043,13 @@
   function renderTopbar(data) {
     const sys = data.system;
     document.getElementById('server-title').textContent = sys.hostname;
-    document.getElementById('host-ip').textContent = sys.ipAddress;
+    const netInfo = getNetworkAccessInfo();
+    const ipEl = document.getElementById('host-ip');
+    if (ipEl) {
+      const modeSuffix = netInfo.mode === 'tailscale' ? ' · Tailscale' : netInfo.mode === 'lan' ? ' · Lokal' : '';
+      ipEl.textContent = `${netInfo.activeHost || sys.ipAddress}${modeSuffix}`;
+    }
+    updateNetworkContextBadge();
     document.getElementById('host-subtitle').textContent =
       `${sys.os} · Kernel ${sys.kernel} · Laufzeit ${formatUptime(sys.uptimeSeconds)}`;
   }
@@ -1633,7 +1639,7 @@
     badge.className = `tag ${state.smbData.running ? 'tag-ok' : ''}`;
 
     document.getElementById('smb-username').value = state.smbData.config.username || 'homeserver';
-    const ip = state.snapshot?.system?.ipAddress || window.location.hostname || 'server';
+    const ip = getActiveLinkHost();
 
     const tbody = document.getElementById('smb-shares-tbody');
     const shares = state.smbData.config.shares || [];
@@ -1662,13 +1668,207 @@
       .join('');
   }
 
+  // ==================== NETWORK ACCESS CONTEXT (TAILSCALE vs LAN) ====================
+  function isTailscaleHost(host) {
+    const h = String(host || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    return (
+      /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h) ||
+      h.startsWith('fd7a:115c:a1e0:') ||
+      h.endsWith('.ts.net')
+    );
+  }
+
+  function isPrivateLanHost(host) {
+    const h = String(host || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    return (
+      h === 'localhost' ||
+      h === '127.0.0.1' ||
+      h === '::1' ||
+      h === '0.0.0.0' ||
+      h.startsWith('192.168.') ||
+      h.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(h) ||
+      h.endsWith('.local')
+    );
+  }
+
+  function rememberCurrentServerHost() {
+    const h = (window.location.hostname || '').trim().toLowerCase();
+    if (!h || h === 'localhost' || h === '127.0.0.1') return;
+    if (!isTailscaleHost(h) && !isPrivateLanHost(h)) return;
+    try {
+      const list = JSON.parse(localStorage.getItem('hs_known_server_hosts') || '[]');
+      const set = new Set(Array.isArray(list) ? list : []);
+      set.add(h);
+      localStorage.setItem('hs_known_server_hosts', JSON.stringify([...set].slice(-12)));
+    } catch {}
+  }
+
+  function getKnownServerHosts() {
+    const hosts = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
+    const cur = (window.location.hostname || '').trim().toLowerCase();
+    if (cur) hosts.add(cur);
+    const sys = state.snapshot?.system;
+    const ctx = state.clientContext;
+    for (const ip of [
+      sys?.ipAddress,
+      sys?.lanIp,
+      sys?.tailscaleIp,
+      ...(Array.isArray(sys?.allServerIps) ? sys.allServerIps : []),
+      ctx?.lanIp,
+      ctx?.tailscaleIp,
+      ...(Array.isArray(ctx?.allServerIps) ? ctx.allServerIps : [])
+    ]) {
+      if (ip) hosts.add(String(ip).trim().toLowerCase());
+    }
+    const rawHost = (sys?.rawHostname || '').trim().toLowerCase();
+    if (rawHost) {
+      hosts.add(rawHost);
+      hosts.add(`${rawHost}.local`);
+    }
+    try {
+      const saved = JSON.parse(localStorage.getItem('hs_known_server_hosts') || '[]');
+      if (Array.isArray(saved)) {
+        saved.forEach((x) => { if (x) hosts.add(String(x).trim().toLowerCase()); });
+      }
+    } catch {}
+    return hosts;
+  }
+
+  function getNetworkAccessInfo() {
+    const curHost = (window.location.hostname || '').trim();
+    const sys = state.snapshot?.system || {};
+    const ctx = state.clientContext || {};
+    const lanIp = sys.lanIp || ctx.lanIp || (isPrivateLanHost(curHost) ? curHost : sys.ipAddress || '');
+    const tailscaleIp = sys.tailscaleIp || ctx.tailscaleIp || (isTailscaleHost(curHost) ? curHost : '');
+
+    let detectedMode = 'remote';
+    if (isTailscaleHost(curHost) || ctx.viaTailscale) {
+      detectedMode = 'tailscale';
+    } else if (isPrivateLanHost(curHost) || ctx.viaLan) {
+      detectedMode = 'lan';
+    }
+
+    const override = state.netContextOverride || 'auto';
+    const mode = override === 'auto' ? detectedMode : override;
+
+    let activeHost = curHost || lanIp || tailscaleIp || 'localhost';
+    if (mode === 'tailscale') {
+      activeHost = isTailscaleHost(curHost) ? curHost : (tailscaleIp || curHost || lanIp || 'localhost');
+    } else if (mode === 'lan') {
+      activeHost = (isPrivateLanHost(curHost) && curHost !== 'localhost' && curHost !== '127.0.0.1')
+        ? curHost
+        : (lanIp || curHost || 'localhost');
+    }
+
+    return { mode, detectedMode, override, activeHost, lanIp, tailscaleIp };
+  }
+
+  function getActiveLinkHost() {
+    return getNetworkAccessInfo().activeHost || window.location.hostname || 'localhost';
+  }
+
+  function getActiveOrigin() {
+    const info = getNetworkAccessInfo();
+    const host = info.activeHost || window.location.hostname || 'localhost';
+    const proto = window.location.protocol || 'http:';
+    const port = window.location.port ? `:${window.location.port}` : '';
+    const formattedHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+    return `${proto}//${formattedHost}${port}`;
+  }
+
+  function updateNetworkContextBadge() {
+    const btn = document.getElementById('btn-net-context');
+    const label = document.getElementById('net-context-label');
+    if (!btn || !label) return;
+    const info = getNetworkAccessInfo();
+    btn.classList.remove('mode-tailscale', 'mode-lan');
+    if (info.mode === 'tailscale') {
+      btn.classList.add('mode-tailscale');
+      label.textContent = info.override === 'auto' ? 'Tailscale' : 'Tailscale*';
+    } else if (info.mode === 'lan') {
+      btn.classList.add('mode-lan');
+      label.textContent = info.override === 'auto' ? 'Lokal' : 'Lokal*';
+    } else {
+      label.textContent = info.override === 'auto' ? 'Web' : info.override;
+    }
+    const modeDesc = info.mode === 'tailscale' ? 'Tailscale' : info.mode === 'lan' ? 'Lokales Netz (LAN)' : 'Extern / Domain';
+    const overrideNote = info.override === 'auto' ? 'automatisch erkannt' : 'manuell gewählt';
+    btn.title = `${modeDesc} (${info.activeHost}) — ${overrideNote}. Klicken zum Umschalten (Auto / Lokal / Tailscale).`;
+  }
+
+  async function initNetworkContext() {
+    rememberCurrentServerHost();
+    try {
+      state.netContextOverride = sessionStorage.getItem('hs_net_override') || 'auto';
+    } catch {
+      state.netContextOverride = 'auto';
+    }
+    updateNetworkContextBadge();
+
+    document.getElementById('btn-net-context')?.addEventListener('click', () => {
+      const order = ['auto', 'lan', 'tailscale'];
+      const curIdx = order.indexOf(state.netContextOverride || 'auto');
+      state.netContextOverride = order[(curIdx + 1) % order.length];
+      try {
+        sessionStorage.setItem('hs_net_override', state.netContextOverride);
+      } catch {}
+      updateNetworkContextBadge();
+      if (state.snapshot) {
+        renderTopbar(state.snapshot);
+        renderServices(state.snapshot);
+        renderPortainerBridge(state.snapshot);
+        renderDockerTables(state.snapshot);
+      }
+      if (state.smbData) renderSmbPanel();
+      if (state.sharesList) renderSharesList();
+    });
+
+    try {
+      const res = await fetch('/api/client/context', { cache: 'no-store' });
+      if (res.ok) {
+        state.clientContext = await res.json();
+        updateNetworkContextBadge();
+        if (state.snapshot) {
+          renderTopbar(state.snapshot);
+          renderServices(state.snapshot);
+          renderPortainerBridge(state.snapshot);
+          renderDockerTables(state.snapshot);
+        }
+        if (state.smbData) renderSmbPanel();
+      }
+    } catch {
+      // ignore offline context fetch
+    }
+  }
+
   // ==================== SERVICES & DOCKER ====================
   function resolveServiceUrl(rawUrl) {
     if (!rawUrl) return '#';
-    if (rawUrl.includes('localhost') && window.location.hostname && window.location.hostname !== 'localhost') {
-      return rawUrl.replace('localhost', window.location.hostname);
+    const info = getNetworkAccessInfo();
+    const targetHost = info.activeHost;
+    if (!targetHost) return rawUrl;
+
+    try {
+      const parsed = new URL(rawUrl);
+      const urlHost = parsed.hostname.toLowerCase();
+      const known = getKnownServerHosts();
+      const isSameServerHost =
+        known.has(urlHost) ||
+        isTailscaleHost(urlHost) ||
+        (isPrivateLanHost(urlHost) && Boolean(parsed.port));
+
+      if (isSameServerHost && urlHost !== targetHost.toLowerCase()) {
+        parsed.hostname = targetHost.includes(':') && !targetHost.startsWith('[') ? `[${targetHost}]` : targetHost;
+        return parsed.toString().replace(/\/$/, rawUrl.endsWith('/') ? '/' : '');
+      }
+      return rawUrl;
+    } catch {
+      if (rawUrl.includes('localhost') && targetHost !== 'localhost') {
+        return rawUrl.replace('localhost', targetHost);
+      }
+      return rawUrl;
     }
-    return rawUrl;
   }
 
   function renderServices(data) {
@@ -1836,8 +2036,9 @@
       return ports
         .slice(0, 2)
         .map((p) => {
-          const host = window.location.hostname || 'localhost';
-          const href = `http://${host}:${p.publicPort}`;
+          const host = getActiveLinkHost();
+          const formattedHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+          const href = `http://${formattedHost}:${p.publicPort}`;
           return `<a class="port-link mono" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(p.label)}</a>`;
         })
         .join('');
@@ -2025,7 +2226,7 @@
     }
     tbody.innerHTML = shares
       .map((s) => {
-        const shareUrl = `${window.location.origin}/s/${s.token}`;
+        const shareUrl = `${getActiveOrigin()}/s/${s.token}`;
         const expText = s.expiresAt ? new Date(s.expiresAt).toLocaleString('de-DE') : 'Unbegrenzt';
         return `
           <tr>
@@ -4100,7 +4301,7 @@
         alert(data.error || 'Freigabe-Link konnte nicht erstellt werden');
         return;
       }
-      const shareUrl = `${window.location.origin}/s/${data.token}`;
+      const shareUrl = `${getActiveOrigin()}/s/${data.token}`;
       document.getElementById('share-result-url').value = shareUrl;
       document.getElementById('share-result-box').classList.remove('hidden');
       refreshSharesBadge();
@@ -6865,6 +7066,7 @@
     initPwa();
     initSubTabs();
     initMobileNav();
+    initNetworkContext();
     bindEvents();
     localStorage.removeItem('hs_mode');
     const urlView = new URLSearchParams(window.location.search).get('view');

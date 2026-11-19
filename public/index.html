@@ -13,7 +13,7 @@
   <link rel="apple-touch-icon" href="/icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-  <link rel="stylesheet" href="/styles.css?v=8" />
+  <link rel="stylesheet" href="/styles.css?v=9" />
 </head>
 <body>
   <!-- Optional Auth Gate Overlay -->
@@ -143,6 +143,11 @@
             <button class="icon-btn" id="btn-alerts" title="System-Warnungen">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path></svg>
               <span class="alert-badge hidden" id="alerts-count">0</span>
+            </button>
+
+            <button type="button" class="icon-btn net-context-btn" id="btn-net-context" title="Verbindungsmodus (Auto: Tailscale / LAN) — Klicken zum Umschalten">
+              <span class="net-context-dot" id="net-context-dot"></span>
+              <span class="mono" id="net-context-label">Auto</span>
             </button>
 
             <button class="icon-btn" id="btn-pause" title="Live-Aktualisierung pausieren / fortsetzen">
@@ -2346,7 +2351,7 @@
     </button>
   </nav>
 
-  <script src="/qr.js?v=8"></script>
-  <script src="/app.js?v=8"></script>
+  <script src="/qr.js?v=9"></script>
+  <script src="/app.js?v=9"></script>
 </body>
 </html>

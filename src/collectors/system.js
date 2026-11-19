@@ -340,17 +340,83 @@ function getLoadAvg() {
   return os.loadavg().map((v) => Math.round(v * 100) / 100);
 }
 
-function getPrimaryIp() {
+function isTailscaleIpv4(ip) {
+  return /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(String(ip || ''));
+}
+
+function isPrivateLanIpv4(ip) {
+  const s = String(ip || '');
+  return (
+    s.startsWith('192.168.') ||
+    s.startsWith('10.') ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(s)
+  );
+}
+
+function readHostFibTrieLocalIps() {
+  const candidates = [];
+  if (PROC_DIR === '/host/proc') {
+    candidates.push('/host/proc/1/net/fib_trie');
+  }
+  candidates.push(path.join(PROC_DIR, 'net', 'fib_trie'));
+
+  const ips = new Set();
+  for (const filePath of candidates) {
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const lines = fs.readFileSync(filePath, 'utf8').split('\n');
+      for (let i = 0; i < lines.length; i += 1) {
+        if (!lines[i].includes('/32 host LOCAL')) continue;
+        for (let j = i - 1; j >= Math.max(0, i - 3); j -= 1) {
+          const m = lines[j].match(/(\d{1,3}(?:\.\d{1,3}){3})/);
+          if (m && !m[1].startsWith('127.')) {
+            ips.add(m[1]);
+            break;
+          }
+        }
+      }
+      if (ips.size > 0) break;
+    } catch {
+      // ignore unreadable fib_trie
+    }
+  }
+  return [...ips];
+}
+
+function getHostNetworkAddresses() {
+  const all = new Set(readHostFibTrieLocalIps());
   const nets = os.networkInterfaces();
   for (const [name, addrs] of Object.entries(nets)) {
-    if (!addrs || name === 'lo' || name.startsWith('docker') || name.startsWith('br-')) continue;
+    if (!addrs || name === 'lo') continue;
     for (const addr of addrs) {
-      if (addr.family === 'IPv4' && !addr.internal) {
-        return addr.address;
+      if (addr.family === 'IPv4' && !addr.internal && !addr.address.startsWith('127.')) {
+        if (!name.startsWith('docker') && !name.startsWith('br-') && !name.startsWith('veth')) {
+          all.add(addr.address);
+        }
       }
     }
   }
-  return '127.0.0.1';
+
+  const list = [...all];
+  const tailscaleIp = list.find((ip) => isTailscaleIpv4(ip)) || null;
+  // Prefer typical home LAN ranges (192.168.x.x, 10.x.x.x) over Docker bridge 172.17.x.x
+  const lanIp =
+    list.find((ip) => ip.startsWith('192.168.')) ||
+    list.find((ip) => ip.startsWith('10.')) ||
+    list.find((ip) => isPrivateLanIpv4(ip) && !ip.startsWith('172.17.')) ||
+    list.find((ip) => isPrivateLanIpv4(ip)) ||
+    null;
+
+  return {
+    lanIp,
+    tailscaleIp,
+    allServerIps: list,
+    primaryIp: lanIp || tailscaleIp || list[0] || '127.0.0.1'
+  };
+}
+
+function getPrimaryIp() {
+  return getHostNetworkAddresses().primaryIp;
 }
 
 const ALLOW_HOST_POWER = String(process.env.ALLOW_HOST_POWER || 'false').toLowerCase() === 'true';
@@ -455,6 +521,8 @@ function collectSystemMetrics(customServerName, powerConfig = null) {
   const loadAvg = getLoadAvg();
   const power = getPowerEstimate(cpuUsage.totalPercent, powerConfig);
 
+  const netAddrs = getHostNetworkAddresses();
+
   return {
     allowPower: ALLOW_HOST_POWER,
     hostname: customServerName || getHostHostname(),
@@ -462,7 +530,10 @@ function collectSystemMetrics(customServerName, powerConfig = null) {
     os: getOsRelease(),
     kernel: os.release(),
     arch: os.arch(),
-    ipAddress: getPrimaryIp(),
+    ipAddress: netAddrs.primaryIp,
+    lanIp: netAddrs.lanIp,
+    tailscaleIp: netAddrs.tailscaleIp,
+    allServerIps: netAddrs.allServerIps,
     uptimeSeconds: getHostUptime(),
     cpu: {
       model: cpuModel,
@@ -482,5 +553,6 @@ function collectSystemMetrics(customServerName, powerConfig = null) {
 
 module.exports = {
   collectSystemMetrics,
-  triggerHostPower
+  triggerHostPower,
+  getHostNetworkAddresses
 };
