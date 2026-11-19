@@ -1916,7 +1916,7 @@
                 ${escapeHtml(c.name)}
                 ${c.stackName ? `<span class="tag" style="margin-left:5px;font-size:10px;">Stack: ${escapeHtml(c.stackName)}</span>` : ''}
                 ${oomBadge}
-                ${c.updateAvailable ? `<button type="button" class="tag tag-warn" data-update-container="${escapeHtml(c.id)}" data-cname="${escapeHtml(c.name)}" title="${escapeHtml(updTitle)}" style="margin-left:5px;font-size:10px;cursor:pointer;">Update verfügbar</button>` : ''}
+                ${c.updateAvailable ? `<button type="button" class="tag tag-warn" data-open-update-details="available" title="${escapeHtml(updTitle)} — Klicken für Details &amp; Update" style="margin-left:5px;font-size:10px;cursor:pointer;">Update verfügbar</button>` : ''}
               </div>
               <div class="container-sub mono">${escapeHtml(c.statusText)}${c.restartCount > 0 ? ` · ${c.restartCount} Restarts` : ''}</div>
             </td>
@@ -2079,6 +2079,8 @@
     document.getElementById('files-trash-container')?.classList.add('hidden');
     document.getElementById('files-header-actions')?.classList.remove('hidden');
 
+    startGlobalProgress();
+    setInlineProgress('files-load-progress', { active: true, label: `Lade ${state.filesPath}…` });
     try {
       const res = await fetch(`/api/files/list?path=${encodeURIComponent(state.filesPath)}`);
       if (!res.ok) throw new Error('Ordner konnte nicht geladen werden');
@@ -2086,6 +2088,9 @@
       renderFilesView();
     } catch (err) {
       document.getElementById('files-tbody').innerHTML = `<tr><td colspan="6" class="form-error">${escapeHtml(err.message)}</td></tr>`;
+    } finally {
+      setInlineProgress('files-load-progress', { active: false });
+      endGlobalProgress();
     }
   }
 
@@ -2433,6 +2438,7 @@
     const pctEl = document.getElementById('upload-progress-pct');
     const labelEl = document.getElementById('upload-progress-label');
     wrap.classList.remove('hidden');
+    startGlobalProgress(0);
 
     let idx = 0;
     const errors = [];
@@ -2441,6 +2447,7 @@
         wrap.classList.add('hidden');
         bar.style.width = '0%';
         pctEl.textContent = '0%';
+        endGlobalProgress();
         loadFilesDirectory(state.filesPath);
         if (errors.length > 0) {
           alert(`Upload teilweise fehlgeschlagen:\n${errors.join('\n')}`);
@@ -2459,6 +2466,8 @@
           const pct = Math.round((ev.loaded / ev.total) * 100);
           bar.style.width = `${pct}%`;
           pctEl.textContent = `${pct}%`;
+          const overall = Math.round((((idx - 1) + ev.loaded / ev.total) / files.length) * 100);
+          setGlobalProgress(overall);
         }
       };
       xhr.onload = () => {
@@ -3205,7 +3214,12 @@
   }
 
   // ==================== HOST & NETWORK MONITOR ====================
-  async function loadHostStatus() {
+  async function loadHostStatus(showBar = false) {
+    const showProgress = showBar || !state.hostData;
+    if (showProgress) {
+      startGlobalProgress();
+      setInlineProgress('host-load-progress', { active: true, label: 'Aktualisiere Host- & Netzwerkdaten…' });
+    }
     if (!state.hostData) {
       try {
         const cacheRes = await fetch('/api/host/cache', { cache: 'no-store' });
@@ -3228,6 +3242,11 @@
       renderHostView();
     } catch {
       // ignore transient errors
+    } finally {
+      if (showProgress) {
+        setInlineProgress('host-load-progress', { active: false });
+        endGlobalProgress();
+      }
     }
   }
 
@@ -3849,12 +3868,22 @@
 
   async function triggerMediaRescan() {
     const btn = document.getElementById('btn-rescan-media');
-    if (btn) btn.disabled = true;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Scanne…';
+    }
+    startGlobalProgress();
+    setInlineProgress('media-scan-progress', { active: true, label: 'Scanne Mediathek-Ordner…' });
     try {
       const res = await fetch(`/api/media/scan`, { method: 'POST' });
       if (res.ok) handleSnapshot(await res.json());
     } finally {
-      if (btn) btn.disabled = false;
+      setInlineProgress('media-scan-progress', { active: false });
+      endGlobalProgress();
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Neu scannen';
+      }
     }
   }
 
@@ -5035,33 +5064,45 @@
     });
 
     // Docker Maintenance (Image Update Check & Safe Prune)
-    document.getElementById('btn-docker-check-updates')?.addEventListener('click', async () => {
-      const btn = document.getElementById('btn-docker-check-updates');
-      const bar = document.getElementById('docker-maintenance-bar');
-      const msg = document.getElementById('docker-maintenance-msg');
-      btn.disabled = true;
-      btn.textContent = 'Prüfe…';
-      try {
-        const res = await fetch('/api/docker/check-updates', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: '{}'
+    document.getElementById('btn-docker-check-updates')?.addEventListener('click', () => {
+      runDockerUpdateCheck({ openDetails: true });
+    });
+
+    document.getElementById('btn-docker-update-details')?.addEventListener('click', () => {
+      openDockerUpdatesModal(false);
+    });
+
+    document.getElementById('btn-docker-update-all')?.addEventListener('click', () => {
+      openDockerUpdatesModal(false);
+      updateAllOutdatedContainers();
+    });
+
+    document.getElementById('btn-autoupdate-open-details')?.addEventListener('click', () => {
+      openDockerUpdatesModal(false);
+    });
+
+    document.getElementById('btn-modal-updates-recheck')?.addEventListener('click', () => {
+      runDockerUpdateCheck({ openDetails: true });
+    });
+
+    document.getElementById('btn-modal-updates-install-all')?.addEventListener('click', () => {
+      updateAllOutdatedContainers();
+    });
+
+    document.querySelectorAll('[data-updates-filter]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.dockerUpdatesFilter = btn.dataset.updatesFilter || 'all';
+        document.querySelectorAll('[data-updates-filter]').forEach((b) => {
+          b.classList.toggle('active', b === btn);
         });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          alert(data.error || 'Update-Prüfung fehlgeschlagen');
-          return;
-        }
-        if (bar && msg) {
-          bar.classList.remove('hidden');
-          msg.textContent = `Registry-Prüfung abgeschlossen: ${data.checkedImages || 0} Images geprüft · ${data.updatesAvailable || 0} Update(s) verfügbar.`;
-        }
-        const snapRes = await fetch('/api/snapshot');
-        if (snapRes.ok) handleSnapshot(await snapRes.json());
-      } finally {
-        btn.disabled = false;
-        btn.textContent = 'Updates prüfen';
-      }
+        renderDockerUpdatesModal();
+      });
+    });
+
+    document.getElementById('docker-updates-tbody')?.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-modal-update-id]');
+      if (!btn) return;
+      updateSingleContainerWithProgress(btn.dataset.modalUpdateId, btn.dataset.modalUpdateName, btn);
     });
 
     const loadDockerUsageSummary = async () => {
@@ -5128,7 +5169,7 @@
     });
 
     // Host & Network Monitor
-    document.getElementById('btn-host-refresh')?.addEventListener('click', loadHostStatus);
+    document.getElementById('btn-host-refresh')?.addEventListener('click', () => loadHostStatus(true));
     document.getElementById('form-ping-add')?.addEventListener('submit', async (e) => {
       e.preventDefault();
       const name = document.getElementById('ping-name').value.trim();
@@ -5726,25 +5767,23 @@
         return;
       }
 
+      const openUpdateDetailsBtn = e.target.closest('[data-open-update-details]');
+      if (openUpdateDetailsBtn) {
+        const filter = openUpdateDetailsBtn.dataset.openUpdateDetails || 'all';
+        state.dockerUpdatesFilter = filter;
+        document.querySelectorAll('[data-updates-filter]').forEach((b) => {
+          b.classList.toggle('active', b.dataset.updatesFilter === filter);
+        });
+        openDockerUpdatesModal(false);
+        return;
+      }
+
       const updateContainerBtn = e.target.closest('[data-update-container]');
       if (updateContainerBtn) {
         const cid = updateContainerBtn.dataset.updateContainer;
         const cname = updateContainerBtn.dataset.cname;
         if (!confirm(`Neuestes Image für "${cname}" ziehen und Container neu starten?`)) return;
-        updateContainerBtn.disabled = true;
-        updateContainerBtn.textContent = 'Lädt…';
-        try {
-          const res = await fetch(`/api/docker/${encodeURIComponent(cid)}/update`, { method: 'POST', body: '{}' });
-          const d = await res.json();
-          if (!res.ok) alert(d.error);
-          else {
-            const snapRes = await fetch(`/api/snapshot`);
-            if (snapRes.ok) handleSnapshot(await snapRes.json());
-          }
-        } finally {
-          updateContainerBtn.disabled = false;
-          updateContainerBtn.textContent = 'Update';
-        }
+        await updateSingleContainerWithProgress(cid, cname, updateContainerBtn);
         return;
       }
 
@@ -6034,7 +6073,12 @@
 
     document.getElementById('btn-ssl-check-now')?.addEventListener('click', async () => {
       const btn = document.getElementById('btn-ssl-check-now');
-      if (btn) btn.disabled = true;
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Prüfe…';
+      }
+      startGlobalProgress();
+      setInlineProgress('host-load-progress', { active: true, label: 'Prüfe SSL-Zertifikate…' });
       try {
         const res = await fetch('/api/host/ssl-check', { method: 'POST' });
         if (res.ok) {
@@ -6043,7 +6087,12 @@
           renderHostView();
         }
       } finally {
-        if (btn) btn.disabled = false;
+        setInlineProgress('host-load-progress', { active: false });
+        endGlobalProgress();
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Jetzt prüfen';
+        }
       }
     });
 
@@ -6084,15 +6133,25 @@
     document.getElementById('btn-autoupdate-run-now')?.addEventListener('click', async () => {
       const btn = document.getElementById('btn-autoupdate-run-now');
       const msg = document.getElementById('autoupdate-save-msg');
-      if (btn) btn.disabled = true;
-      if (msg) msg.textContent = 'Prüfe Images…';
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Läuft…';
+      }
+      if (msg) msg.textContent = 'Prüfe Images & führe Auto-Updates aus…';
+      startGlobalProgress();
+      setInlineProgress('autoupdate-progress', { active: true, label: 'Prüfe Registries & aktualisiere markierte Container…' });
       try {
         const res = await fetch('/api/docker/autoupdate/run', { method: 'POST' });
         const data = await res.json().catch(() => ({}));
         if (msg) msg.textContent = `Fertig: ${data.updated?.length || 0} aktualisiert, ${data.notified?.length || 0} Updates gefunden.`;
         await loadAutomationState();
       } finally {
-        if (btn) btn.disabled = false;
+        setInlineProgress('autoupdate-progress', { active: false });
+        endGlobalProgress();
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Jetzt prüfen & updaten';
+        }
       }
     });
 
@@ -6304,6 +6363,371 @@
       .join('');
   }
 
+  let globalProgressDepth = 0;
+  function startGlobalProgress(percent = null) {
+    globalProgressDepth += 1;
+    const track = document.getElementById('global-progress-track');
+    const fill = document.getElementById('global-progress-fill');
+    if (!track || !fill) return;
+    track.classList.remove('hidden');
+    if (typeof percent === 'number' && Number.isFinite(percent)) {
+      fill.classList.remove('indeterminate');
+      fill.style.width = `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+    } else {
+      fill.classList.add('indeterminate');
+      fill.style.width = '';
+    }
+  }
+
+  function setGlobalProgress(percent) {
+    const track = document.getElementById('global-progress-track');
+    const fill = document.getElementById('global-progress-fill');
+    if (!track || !fill) return;
+    track.classList.remove('hidden');
+    fill.classList.remove('indeterminate');
+    fill.style.width = `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+  }
+
+  function endGlobalProgress() {
+    globalProgressDepth = Math.max(0, globalProgressDepth - 1);
+    if (globalProgressDepth > 0) return;
+    const track = document.getElementById('global-progress-track');
+    const fill = document.getElementById('global-progress-fill');
+    if (!track || !fill) return;
+    fill.classList.remove('indeterminate');
+    fill.style.width = '100%';
+    setTimeout(() => {
+      if (globalProgressDepth === 0) {
+        track.classList.add('hidden');
+        fill.style.width = '0%';
+      }
+    }, 220);
+  }
+
+  function setInlineProgress(prefix, { active, percent = null, label = null } = {}) {
+    const wrap = document.getElementById(`${prefix}-wrap`);
+    const fill = document.getElementById(`${prefix}-fill`);
+    const pctEl = document.getElementById(`${prefix}-pct`);
+    const labelEl = document.getElementById(`${prefix}-label`);
+    if (!wrap) return;
+    if (!active) {
+      wrap.classList.add('hidden');
+      return;
+    }
+    wrap.classList.remove('hidden');
+    if (label !== null && labelEl) labelEl.textContent = label;
+    if (typeof percent === 'number' && Number.isFinite(percent)) {
+      const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+      if (fill) {
+        fill.classList.remove('progress-indeterminate');
+        fill.style.width = `${clamped}%`;
+      }
+      if (pctEl) pctEl.textContent = `${clamped}%`;
+    } else {
+      if (fill) {
+        fill.classList.add('progress-indeterminate');
+        fill.style.width = '45%';
+      }
+      if (pctEl) pctEl.textContent = 'Aktiv';
+    }
+  }
+
+  function shortDigest(digest) {
+    if (!digest) return '—';
+    const clean = String(digest).replace(/^sha256:/i, '');
+    return `sha256:${clean.slice(0, 12)}`;
+  }
+
+  function updateDockerMaintenanceBar(data) {
+    const bar = document.getElementById('docker-maintenance-bar');
+    const msg = document.getElementById('docker-maintenance-msg');
+    const detailsBtn = document.getElementById('btn-docker-update-details');
+    const allBtn = document.getElementById('btn-docker-update-all');
+    if (!bar || !msg || !data) return;
+    const avail = Number(data.updatesAvailable || 0);
+    const checked = Number(data.checkedImages || 0);
+    bar.classList.remove('hidden');
+    msg.textContent = `Registry-Prüfung abgeschlossen: ${checked} Images geprüft · ${avail} Update(s) verfügbar.`;
+    detailsBtn?.classList.remove('hidden');
+    if (allBtn) {
+      allBtn.classList.toggle('hidden', avail === 0);
+      allBtn.textContent = `Alle updaten (${avail})`;
+    }
+  }
+
+  function renderDockerUpdatesModal() {
+    const data = state.dockerUpdatesData;
+    const tbody = document.getElementById('docker-updates-tbody');
+    const summaryEl = document.getElementById('docker-updates-summary');
+    const installAllBtn = document.getElementById('btn-modal-updates-install-all');
+    if (!tbody) return;
+
+    const results = Array.isArray(data?.results) ? data.results : [];
+    const availList = results.filter((r) => r.updateAvailable);
+    const errList = results.filter((r) => r.error);
+    const okList = results.filter((r) => !r.updateAvailable && !r.error && r.checked !== false);
+
+    if (summaryEl) {
+      const ts = data?.checkedAt ? ` · Stand: ${formatTimeShort(data.checkedAt)}` : '';
+      summaryEl.textContent = `${results.length} Container · ${availList.length} Update(s) verfügbar · ${okList.length} aktuell · ${errList.length} Fehler${ts}`;
+    }
+
+    if (installAllBtn) {
+      installAllBtn.classList.toggle('hidden', availList.length === 0);
+      installAllBtn.textContent = `Alle Updates installieren (${availList.length})`;
+    }
+
+    const filter = state.dockerUpdatesFilter || 'all';
+    const filtered = results.filter((r) => {
+      if (filter === 'available') return Boolean(r.updateAvailable);
+      if (filter === 'uptodate') return !r.updateAvailable && !r.error;
+      if (filter === 'error') return Boolean(r.error);
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="4" class="muted-text">${
+        results.length === 0
+          ? 'Noch keine Update-Prüfung durchgeführt. Klicke auf „Neu prüfen“.'
+          : 'Keine Container für diesen Filter.'
+      }</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = filtered
+      .map((r) => {
+        let statusTag = `<span class="tag tag-ok">Aktuell</span>`;
+        if (r.updatedNow) {
+          statusTag = `<span class="tag tag-ok">Aktualisiert ✓</span>`;
+        } else if (r.updateAvailable) {
+          statusTag = `<span class="tag tag-warn">Update verfügbar</span>`;
+        } else if (r.error) {
+          statusTag = `<span class="tag tag-crit">Fehler</span>`;
+        } else if (r.checked === false) {
+          statusTag = `<span class="tag">Nicht geprüft</span>`;
+        }
+
+        const digestHtml = r.error
+          ? `<div class="digest-compare"><span class="form-error" style="font-size:11px;">${escapeHtml(r.error)}</span></div>`
+          : `<div class="digest-compare mono">
+              <span class="digest-chip" title="${escapeHtml(r.localDigest || '')}">Lokal: ${escapeHtml(shortDigest(r.localDigest))}</span>
+              ${
+                r.remoteDigest
+                  ? `<span class="digest-chip ${r.updateAvailable ? 'digest-new' : ''}" title="${escapeHtml(r.remoteDigest)}">Registry: ${escapeHtml(shortDigest(r.remoteDigest))}</span>`
+                  : ''
+              }
+            </div>`;
+
+        const actionHtml = r.updateAvailable
+          ? `<button type="button" class="btn-primary btn-xs" data-modal-update-id="${escapeHtml(r.id)}" data-modal-update-name="${escapeHtml(r.name)}">Jetzt updaten</button>`
+          : `<button type="button" class="btn-secondary btn-xs" data-modal-update-id="${escapeHtml(r.id)}" data-modal-update-name="${escapeHtml(r.name)}">Re-Pull</button>`;
+
+        return `
+          <tr>
+            <td>
+              <strong>${escapeHtml(r.name)}</strong>
+              <div class="muted-text mono" style="font-size:11px;">${escapeHtml(r.state || '—')} · ${escapeHtml(r.id)}</div>
+            </td>
+            <td>
+              <div class="mono" style="font-size:12px;word-break:break-all;">${escapeHtml(r.image)}</div>
+              ${digestHtml}
+            </td>
+            <td>${statusTag}</td>
+            <td class="num">${actionHtml}</td>
+          </tr>
+        `;
+      })
+      .join('');
+  }
+
+  async function openDockerUpdatesModal(autoCheckIfEmpty = false) {
+    openModal('modal-docker-updates');
+    if (!state.dockerUpdatesData) {
+      startGlobalProgress();
+      setInlineProgress('docker-updates-progress', { active: true, label: 'Lade gespeicherte Update-Daten…' });
+      try {
+        const res = await fetch('/api/docker/updates', { cache: 'no-store' });
+        if (res.ok) {
+          state.dockerUpdatesData = await res.json();
+          if (state.dockerUpdatesData.checkedImages > 0) {
+            updateDockerMaintenanceBar(state.dockerUpdatesData);
+          }
+        }
+      } finally {
+        setInlineProgress('docker-updates-progress', { active: false });
+        endGlobalProgress();
+      }
+    }
+    renderDockerUpdatesModal();
+    if (autoCheckIfEmpty && (!state.dockerUpdatesData || state.dockerUpdatesData.checkedImages === 0)) {
+      await runDockerUpdateCheck({ openDetails: true });
+    }
+  }
+
+  async function runDockerUpdateCheck({ openDetails = true } = {}) {
+    const btn = document.getElementById('btn-docker-check-updates');
+    const recheckBtn = document.getElementById('btn-modal-updates-recheck');
+    const bar = document.getElementById('docker-maintenance-bar');
+    const msg = document.getElementById('docker-maintenance-msg');
+    if (openDetails) openModal('modal-docker-updates');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Prüfe…';
+    }
+    if (recheckBtn) recheckBtn.disabled = true;
+    if (bar && msg) {
+      bar.classList.remove('hidden');
+      msg.textContent = 'Prüfe Container-Images in den Registries…';
+    }
+    startGlobalProgress();
+    setInlineProgress('docker-maintenance-progress', { active: true, label: 'Vergleiche lokale Image-Digests mit Docker Hub / GHCR…' });
+    setInlineProgress('docker-updates-progress', { active: true, label: 'Prüfe alle Container-Images in den Registries…' });
+    try {
+      const res = await fetch('/api/docker/check-updates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (msg) msg.textContent = `Fehler: ${data.error || 'Update-Prüfung fehlgeschlagen'}`;
+        alert(data.error || 'Update-Prüfung fehlgeschlagen');
+        return;
+      }
+      state.dockerUpdatesData = data;
+      updateDockerMaintenanceBar(data);
+      renderDockerUpdatesModal();
+      const snapRes = await fetch('/api/snapshot');
+      if (snapRes.ok) handleSnapshot(await snapRes.json());
+    } finally {
+      setInlineProgress('docker-maintenance-progress', { active: false });
+      setInlineProgress('docker-updates-progress', { active: false });
+      endGlobalProgress();
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Updates prüfen';
+      }
+      if (recheckBtn) recheckBtn.disabled = false;
+    }
+  }
+
+  async function updateSingleContainerWithProgress(cid, cname, triggerBtn = null) {
+    const origText = triggerBtn?.textContent || 'Update';
+    if (triggerBtn) {
+      triggerBtn.disabled = true;
+      triggerBtn.textContent = 'Lädt…';
+    }
+    const bar = document.getElementById('docker-maintenance-bar');
+    const msg = document.getElementById('docker-maintenance-msg');
+    if (bar && msg) {
+      bar.classList.remove('hidden');
+      msg.textContent = `Aktualisiere Container „${cname || cid}“…`;
+    }
+    startGlobalProgress();
+    setInlineProgress('docker-maintenance-progress', { active: true, label: `Ziehe neues Image & starte „${cname || cid}“ neu…` });
+    setInlineProgress('docker-updates-progress', { active: true, label: `Aktualisiere „${cname || cid}“ (Image Pull & Recreate)…` });
+    try {
+      const res = await fetch(`/api/docker/${encodeURIComponent(cid)}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (msg) msg.textContent = `Update für „${cname || cid}“ fehlgeschlagen: ${d.error || 'Fehler'}`;
+        alert(d.error || 'Container-Update fehlgeschlagen');
+        return false;
+      }
+      if (state.dockerUpdatesData?.results) {
+        const entry = state.dockerUpdatesData.results.find((r) => r.id === cid || r.name === cname);
+        if (entry) {
+          entry.updateAvailable = false;
+          entry.updatedNow = true;
+          entry.error = null;
+          if (entry.remoteDigest) entry.localDigest = entry.remoteDigest;
+        }
+        state.dockerUpdatesData.updatesAvailable = state.dockerUpdatesData.results.filter((r) => r.updateAvailable).length;
+        updateDockerMaintenanceBar(state.dockerUpdatesData);
+        renderDockerUpdatesModal();
+      }
+      if (msg) msg.textContent = `Container „${cname || cid}“ erfolgreich aktualisiert.`;
+      const snapRes = await fetch('/api/snapshot');
+      if (snapRes.ok) handleSnapshot(await snapRes.json());
+      return true;
+    } finally {
+      setInlineProgress('docker-maintenance-progress', { active: false });
+      setInlineProgress('docker-updates-progress', { active: false });
+      endGlobalProgress();
+      if (triggerBtn) {
+        triggerBtn.disabled = false;
+        triggerBtn.textContent = origText;
+      }
+    }
+  }
+
+  async function updateAllOutdatedContainers() {
+    const results = state.dockerUpdatesData?.results || [];
+    const targets = results.filter((r) => r.updateAvailable);
+    if (targets.length === 0) return;
+    if (!confirm(`${targets.length} Container jetzt nacheinander aktualisieren?`)) return;
+
+    const btnModal = document.getElementById('btn-modal-updates-install-all');
+    const btnBar = document.getElementById('btn-docker-update-all');
+    if (btnModal) btnModal.disabled = true;
+    if (btnBar) btnBar.disabled = true;
+
+    let doneCount = 0;
+    let failedCount = 0;
+    startGlobalProgress(5);
+    try {
+      for (const item of targets) {
+        const pct = Math.round((doneCount / targets.length) * 100);
+        setGlobalProgress(Math.max(5, pct));
+        const label = `Aktualisiere (${doneCount + 1}/${targets.length}): ${item.name}…`;
+        setInlineProgress('docker-updates-progress', { active: true, percent: pct, label });
+        setInlineProgress('docker-maintenance-progress', { active: true, percent: pct, label });
+
+        const res = await fetch(`/api/docker/${encodeURIComponent(item.id)}/update`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok) {
+          item.updateAvailable = false;
+          item.updatedNow = true;
+          item.error = null;
+          if (item.remoteDigest) item.localDigest = item.remoteDigest;
+        } else {
+          failedCount += 1;
+          item.error = d.error || 'Update fehlgeschlagen';
+        }
+        doneCount += 1;
+        const nextPct = Math.round((doneCount / targets.length) * 100);
+        setGlobalProgress(nextPct);
+        setInlineProgress('docker-updates-progress', { active: true, percent: nextPct, label: `${doneCount}/${targets.length} verarbeitet…` });
+        setInlineProgress('docker-maintenance-progress', { active: true, percent: nextPct, label: `${doneCount}/${targets.length} verarbeitet…` });
+        state.dockerUpdatesData.updatesAvailable = results.filter((r) => r.updateAvailable).length;
+        renderDockerUpdatesModal();
+      }
+      updateDockerMaintenanceBar(state.dockerUpdatesData);
+      const msg = document.getElementById('docker-maintenance-msg');
+      if (msg) {
+        msg.textContent = `Batch-Update abgeschlossen: ${doneCount - failedCount} aktualisiert${failedCount > 0 ? `, ${failedCount} fehlgeschlagen` : ''}.`;
+      }
+      const snapRes = await fetch('/api/snapshot');
+      if (snapRes.ok) handleSnapshot(await snapRes.json());
+    } finally {
+      setTimeout(() => {
+        setInlineProgress('docker-updates-progress', { active: false });
+        setInlineProgress('docker-maintenance-progress', { active: false });
+      }, 600);
+      endGlobalProgress();
+      if (btnModal) btnModal.disabled = false;
+      if (btnBar) btnBar.disabled = false;
+    }
+  }
+
   let speedtestRunning = false;
   async function runLanSpeedtest() {
     if (speedtestRunning) return;
@@ -6317,6 +6741,8 @@
       btn.disabled = true;
       btn.textContent = 'Messung läuft…';
     }
+    startGlobalProgress(5);
+    setInlineProgress('speedtest-progress', { active: true, percent: 5, label: 'Phase 1/3: Messe Latenz & Jitter…' });
 
     try {
       // Phase 1: Ping & Jitter
@@ -6329,6 +6755,9 @@
         const t0 = performance.now();
         await fetch(`/api/net/ping?_=${Date.now()}_${i}`, { cache: 'no-store' });
         rtts.push(performance.now() - t0);
+        const pct = 5 + Math.round(((i + 1) / 5) * 15);
+        setGlobalProgress(pct);
+        setInlineProgress('speedtest-progress', { active: true, percent: pct, label: `Phase 1/3: Ping (${i + 1}/5)…` });
       }
       const avgPing = rtts.reduce((a, b) => a + b, 0) / rtts.length;
       const jitter = rtts.reduce((a, b) => a + Math.abs(b - avgPing), 0) / rtts.length;
@@ -6340,6 +6769,7 @@
       // Phase 2: Download (streaming)
       if (phaseEl) phaseEl.textContent = 'Download';
       if (statusEl) statusEl.textContent = `Lade ${sizeMb} MB vom NAS…`;
+      const expectedBytes = sizeMb * 1024 * 1024;
       const dlStart = performance.now();
       const dlRes = await fetch(`/api/net/download?mb=${sizeMb}&_=${Date.now()}`, { cache: 'no-store' });
       let dlBytes = 0;
@@ -6351,6 +6781,9 @@
           dlBytes += value.byteLength;
           const sec = Math.max(0.02, (performance.now() - dlStart) / 1000);
           setSpeedtestGauge((dlBytes * 8) / sec / 1e6);
+          const pct = 20 + Math.round(Math.min(1, dlBytes / expectedBytes) * 40);
+          setGlobalProgress(pct);
+          setInlineProgress('speedtest-progress', { active: true, percent: pct, label: `Phase 2/3: Download (${(dlBytes / 1048576).toFixed(1)} / ${sizeMb} MB)…` });
         }
       } else {
         const buf = await dlRes.arrayBuffer();
@@ -6363,16 +6796,33 @@
       document.getElementById('speedtest-dl-val').textContent = `${dlMbps.toFixed(1)} Mbit/s`;
       document.getElementById('speedtest-dl-mbs').textContent = `${dlMBs.toFixed(1)} MB/s`;
 
-      // Phase 3: Upload
+      // Phase 3: Upload (with live XHR upload progress!)
       if (phaseEl) phaseEl.textContent = 'Upload';
       if (statusEl) statusEl.textContent = `Sende ${sizeMb} MB zum NAS…`;
-      const payload = new Uint8Array(sizeMb * 1024 * 1024);
+      setInlineProgress('speedtest-progress', { active: true, percent: 60, label: `Phase 3/3: Upload (0 / ${sizeMb} MB)…` });
+      const payload = new Uint8Array(expectedBytes);
       const ulStart = performance.now();
-      await fetch('/api/net/upload', { method: 'POST', body: payload, cache: 'no-store' });
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/net/upload');
+        xhr.upload.onprogress = (ev) => {
+          if (!ev.lengthComputable) return;
+          const sec = Math.max(0.02, (performance.now() - ulStart) / 1000);
+          setSpeedtestGauge((ev.loaded * 8) / sec / 1e6);
+          const pct = 60 + Math.round((ev.loaded / ev.total) * 40);
+          setGlobalProgress(pct);
+          setInlineProgress('speedtest-progress', { active: true, percent: pct, label: `Phase 3/3: Upload (${(ev.loaded / 1048576).toFixed(1)} / ${sizeMb} MB)…` });
+        };
+        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`HTTP ${xhr.status}`)));
+        xhr.onerror = () => reject(new Error('Netzwerkfehler beim Upload'));
+        xhr.send(payload);
+      });
       const ulSec = Math.max(0.01, (performance.now() - ulStart) / 1000);
       const ulMbps = (payload.byteLength * 8) / ulSec / 1e6;
       const ulMBs = payload.byteLength / ulSec / (1024 * 1024);
       setSpeedtestGauge(ulMbps);
+      setGlobalProgress(100);
+      setInlineProgress('speedtest-progress', { active: true, percent: 100, label: 'Messung abgeschlossen!' });
       document.getElementById('speedtest-ul-val').textContent = `${ulMbps.toFixed(1)} Mbit/s`;
       document.getElementById('speedtest-ul-mbs').textContent = `${ulMBs.toFixed(1)} MB/s`;
 
@@ -6400,6 +6850,8 @@
       if (statusEl) statusEl.textContent = `Speedtest fehlgeschlagen: ${err.message}`;
     } finally {
       speedtestRunning = false;
+      setTimeout(() => setInlineProgress('speedtest-progress', { active: false }), 900);
+      endGlobalProgress();
       if (btn) {
         btn.disabled = false;
         btn.textContent = 'Speedtest starten';

@@ -146,3 +146,12 @@ test('Auth cookie sets Secure flag behind HTTPS proxy', async () => {
   assert.equal(httpCookie.includes('; Secure'), false);
   assert.equal(httpsCookie.includes('; Secure'), true);
 });
+
+test('Docker updates cache endpoint returns structured payload', async () => {
+  const res = await fetch(`${BASE_URL}/api/docker/updates`);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(Array.isArray(data.results), true);
+  assert.equal(typeof data.updatesAvailable, 'number');
+  assert.equal(typeof data.checkedImages, 'number');
+});

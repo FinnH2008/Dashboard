@@ -44,6 +44,7 @@ const {
   inspectContainerConfig,
   recreateOrUpdateContainer,
   checkContainerUpdates,
+  getCachedContainerUpdates,
   getDockerDiskUsage,
   pruneDockerResources,
   loadAutoUpdateConfig,
@@ -1170,6 +1171,10 @@ const server = http.createServer(async (req, res) => {
       const result = await runAutoUpdatePass({ forceAllAuto: false });
       logAuditEvent(req, 'docker.autoupdate.run', `Auto-Update Lauf: ${result.updated?.length || 0} aktualisiert, ${result.notified?.length || 0} Updates gefunden.`, 'info');
       return sendJson(res, 200, result);
+    }
+
+    if (req.method === 'GET' && pathname === '/api/docker/updates') {
+      return sendJson(res, 200, await getCachedContainerUpdates());
     }
 
     if (req.method === 'POST' && pathname === '/api/docker/check-updates') {

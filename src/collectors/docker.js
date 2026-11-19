@@ -909,8 +909,11 @@ async function checkContainerUpdates() {
       id: c.Id.slice(0, 12),
       name,
       image: c.Image,
+      state: c.State || '',
       updateAvailable: Boolean(status.updateAvailable),
-      remoteDigest: status.remoteDigest,
+      localDigest: status.localDigests?.[0] || null,
+      remoteDigest: status.remoteDigest || null,
+      checkedAt: status.checkedAt || checkedAt,
       error: status.error || null
     };
   });
@@ -918,6 +921,41 @@ async function checkContainerUpdates() {
   return {
     checkedAt,
     checkedImages: uniqueImages.length,
+    updatesAvailable: results.filter((r) => r.updateAvailable).length,
+    results
+  };
+}
+
+async function getCachedContainerUpdates() {
+  loadDockerCache();
+  if (!fs.existsSync(DOCKER_SOCKET)) {
+    return {
+      checkedAt: lastUpdateCheckAt,
+      checkedImages: 0,
+      updatesAvailable: 0,
+      results: []
+    };
+  }
+  const rawList = await dockerJson('GET', '/containers/json?all=true', 3000);
+  const results = rawList.map((c) => {
+    const name = (c.Names?.[0] || c.Id.slice(0, 12)).replace(/^\//, '');
+    const status = updateCheckCache.get(c.Image) || null;
+    return {
+      id: c.Id.slice(0, 12),
+      name,
+      image: c.Image,
+      state: c.State || '',
+      checked: Boolean(status),
+      updateAvailable: Boolean(status?.updateAvailable),
+      localDigest: status?.localDigests?.[0] || null,
+      remoteDigest: status?.remoteDigest || null,
+      checkedAt: status?.checkedAt || lastUpdateCheckAt || null,
+      error: status?.error || null
+    };
+  });
+  return {
+    checkedAt: lastUpdateCheckAt,
+    checkedImages: new Set(results.filter((r) => r.checked).map((r) => r.image)).size,
     updatesAvailable: results.filter((r) => r.updateAvailable).length,
     results
   };
@@ -1072,6 +1110,7 @@ module.exports = {
   inspectContainerConfig,
   recreateOrUpdateContainer,
   checkContainerUpdates,
+  getCachedContainerUpdates,
   getDockerDiskUsage,
   pruneDockerResources,
   loadOomHistory,

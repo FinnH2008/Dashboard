@@ -13,7 +13,7 @@
   <link rel="apple-touch-icon" href="/icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-  <link rel="stylesheet" href="/styles.css?v=7" />
+  <link rel="stylesheet" href="/styles.css?v=8" />
 </head>
 <body>
   <!-- Optional Auth Gate Overlay -->
@@ -162,6 +162,9 @@
 
             <button class="icon-btn hidden" id="btn-logout" title="Abmelden">Abmelden</button>
           </div>
+        </div>
+        <div class="global-progress-track hidden" id="global-progress-track" role="progressbar" aria-label="Ladevorgang">
+          <div class="global-progress-fill indeterminate" id="global-progress-fill"></div>
         </div>
       </header>
 
@@ -336,6 +339,15 @@
                 <button class="btn-secondary btn-sm" id="btn-rescan-media">Neu scannen</button>
               </div>
             </div>
+            <div class="inline-progress-wrap hidden" id="media-scan-progress-wrap">
+              <div class="inline-progress-meta">
+                <span id="media-scan-progress-label">Scanne Mediathek-Ordner…</span>
+                <span class="mono" id="media-scan-progress-pct">Aktiv</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill fill-blue progress-indeterminate" id="media-scan-progress-fill" style="width:45%"></div>
+              </div>
+            </div>
             <div class="media-donut-layout">
               <div class="donut-box">
                 <canvas id="media-donut-canvas" width="160" height="160"></canvas>
@@ -484,6 +496,16 @@
                 <button class="btn-secondary btn-sm hidden" id="btn-trash-restore-sel">Auswahl wiederherstellen</button>
                 <button class="btn-danger-ghost btn-sm hidden" id="btn-trash-delete-sel">Auswahl endgültig löschen</button>
                 <button class="btn-danger-ghost btn-sm" id="btn-trash-empty">Papierkorb leeren</button>
+              </div>
+            </div>
+
+            <div class="inline-progress-wrap hidden" id="files-load-progress-wrap">
+              <div class="inline-progress-meta">
+                <span id="files-load-progress-label">Lade Verzeichnis…</span>
+                <span class="mono" id="files-load-progress-pct">Aktiv</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill fill-blue progress-indeterminate" id="files-load-progress-fill" style="width:45%"></div>
               </div>
             </div>
 
@@ -660,6 +682,16 @@
           <button type="button" class="view-subtab active" data-subtab-group="host" data-subtab-target="live">Live &amp; Prozesse</button>
           <button type="button" class="view-subtab" data-subtab-group="host" data-subtab-target="network">Netzwerk, Ports &amp; SSL</button>
           <button type="button" class="view-subtab" data-subtab-group="host" data-subtab-target="security">Sicherheit (SSH &amp; Fail2ban)</button>
+        </div>
+
+        <div class="inline-progress-wrap hidden" id="host-load-progress-wrap">
+          <div class="inline-progress-meta">
+            <span id="host-load-progress-label">Aktualisiere Host- &amp; Netzwerkdaten…</span>
+            <span class="mono" id="host-load-progress-pct">Aktiv</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill fill-blue progress-indeterminate" id="host-load-progress-fill" style="width:45%"></div>
+          </div>
         </div>
 
         <!-- VPN Interfaces & Docker VPN -->
@@ -864,6 +896,16 @@
             </div>
           </div>
 
+          <div class="inline-progress-wrap hidden" id="speedtest-progress-wrap">
+            <div class="inline-progress-meta">
+              <span id="speedtest-progress-label">Messung läuft…</span>
+              <span class="mono" id="speedtest-progress-pct">0%</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill fill-blue" id="speedtest-progress-fill" style="width:0%"></div>
+            </div>
+          </div>
+
           <div class="speedtest-history" id="speedtest-history"></div>
         </article>
       </section>
@@ -895,7 +937,22 @@
         </div>
 
         <div class="card docker-maintenance-bar hidden" id="docker-maintenance-bar">
-          <span class="mono" id="docker-maintenance-msg">—</span>
+          <div class="docker-maintenance-top">
+            <span class="mono" id="docker-maintenance-msg">—</span>
+            <div class="docker-maintenance-actions">
+              <button type="button" class="btn-secondary btn-xs hidden" id="btn-docker-update-details">Details anzeigen</button>
+              <button type="button" class="btn-primary btn-xs hidden" id="btn-docker-update-all">Alle updaten</button>
+            </div>
+          </div>
+          <div class="docker-maintenance-progress hidden" id="docker-maintenance-progress-wrap">
+            <div class="inline-progress-meta">
+              <span id="docker-maintenance-progress-label">Wird ausgeführt…</span>
+              <span class="mono" id="docker-maintenance-progress-pct">Aktiv</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill fill-blue progress-indeterminate" id="docker-maintenance-progress-fill" style="width:45%"></div>
+            </div>
+          </div>
         </div>
 
         <article class="card panel-card subtab-panel active" data-subtab-group="docker" data-subtab-panel="containers">
@@ -1360,8 +1417,18 @@
                 <div class="io-pill mono" id="autoupdate-last-run">Noch kein Lauf</div>
               </div>
             </div>
+            <div class="inline-progress-wrap hidden" id="autoupdate-progress-wrap">
+              <div class="inline-progress-meta">
+                <span id="autoupdate-progress-label">Prüfe Container-Images…</span>
+                <span class="mono" id="autoupdate-progress-pct">Aktiv</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill fill-blue progress-indeterminate" id="autoupdate-progress-fill" style="width:45%"></div>
+              </div>
+            </div>
             <div class="form-actions" style="flex-wrap:wrap;">
               <span class="save-feedback" id="autoupdate-save-msg"></span>
+              <button type="button" class="btn-secondary" id="btn-autoupdate-open-details">Update-Details</button>
               <button type="button" class="btn-secondary" id="btn-autoupdate-run-now">Jetzt prüfen &amp; updaten</button>
               <button type="submit" class="btn-primary">Auto-Update speichern</button>
             </div>
@@ -2158,6 +2225,56 @@
     </div>
   </div>
 
+  <!-- Modal: Container Updates & Details -->
+  <div class="modal-backdrop hidden" id="modal-docker-updates">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div>
+          <h3>Container-Updates &amp; Details</h3>
+          <p class="panel-subtitle" id="docker-updates-summary">Registry-Abgleich der lokalen und verfügbaren Image-Digests</p>
+        </div>
+        <button type="button" class="modal-close" data-close-modal="modal-docker-updates" aria-label="Schließen">&times;</button>
+      </div>
+
+      <div class="docker-updates-toolbar">
+        <div class="segmented-sm" role="group" aria-label="Update-Filter">
+          <button type="button" class="seg-btn active" data-updates-filter="all">Alle</button>
+          <button type="button" class="seg-btn" data-updates-filter="available">Verfügbar</button>
+          <button type="button" class="seg-btn" data-updates-filter="uptodate">Aktuell</button>
+          <button type="button" class="seg-btn" data-updates-filter="error">Fehler</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button type="button" class="btn-secondary btn-sm" id="btn-modal-updates-recheck">Neu prüfen</button>
+          <button type="button" class="btn-primary btn-sm hidden" id="btn-modal-updates-install-all">Alle Updates installieren</button>
+        </div>
+      </div>
+
+      <div class="inline-progress-wrap hidden" id="docker-updates-progress-wrap">
+        <div class="inline-progress-meta">
+          <span id="docker-updates-progress-label">Prüfe Container-Images…</span>
+          <span class="mono" id="docker-updates-progress-pct">Aktiv</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill fill-blue progress-indeterminate" id="docker-updates-progress-fill" style="width:45%"></div>
+        </div>
+      </div>
+
+      <div class="table-wrap" style="max-height:420px;overflow:auto;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Container</th>
+              <th>Image &amp; Digest-Details</th>
+              <th>Status</th>
+              <th class="num">Aktion</th>
+            </tr>
+          </thead>
+          <tbody id="docker-updates-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <!-- Mobile More Drawer / Bottom Sheet -->
   <div class="mobile-sheet-backdrop hidden" id="mobile-more-backdrop"></div>
   <aside class="mobile-more-sheet hidden" id="mobile-more-sheet" aria-label="Weitere Bereiche">
@@ -2229,7 +2346,7 @@
     </button>
   </nav>
 
-  <script src="/qr.js?v=7"></script>
-  <script src="/app.js?v=7"></script>
+  <script src="/qr.js?v=8"></script>
+  <script src="/app.js?v=8"></script>
 </body>
 </html>
